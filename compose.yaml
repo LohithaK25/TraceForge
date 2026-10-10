@@ -1,0 +1,109 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-traceforge}
+      POSTGRES_USER: ${POSTGRES_USER:-traceforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  inventory-service:
+    build:
+      context: ./services/inventory-service
+    environment:
+      SERVER_PORT: 8081
+      SPRING_PROFILES_ACTIVE: local
+      TRACEFORGE_DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-traceforge}?currentSchema=inventory_service
+      POSTGRES_USER: ${POSTGRES_USER:-traceforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
+      TRACEFORGE_INVENTORY_DEMO_SKU: SKU-ALPHA
+      TRACEFORGE_INVENTORY_DEMO_QUANTITY: 12
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  payment-service:
+    build:
+      context: ./services/payment-service
+    environment:
+      SERVER_PORT: 8083
+      SPRING_PROFILES_ACTIVE: local
+      TRACEFORGE_DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-traceforge}?currentSchema=payment_service
+      POSTGRES_USER: ${POSTGRES_USER:-traceforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  order-service:
+    build:
+      context: ./services/order-service
+    environment:
+      SERVER_PORT: 8082
+      SPRING_PROFILES_ACTIVE: local
+      TRACEFORGE_DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-traceforge}?currentSchema=order_service
+      POSTGRES_USER: ${POSTGRES_USER:-traceforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
+      INVENTORY_SERVICE_URL: http://inventory-service:8081
+      PAYMENT_SERVICE_URL: http://payment-service:8083
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+    environment:
+      SERVER_PORT: 8080
+      INVENTORY_SERVICE_URL: http://inventory-service:8081
+      ORDER_SERVICE_URL: http://order-service:8082
+    depends_on:
+      inventory-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SERVER_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  postgres-data:
+    name: traceforge-postgres-data
+
+networks:
+  default:
+    name: traceforge-network

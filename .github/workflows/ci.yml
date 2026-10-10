@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and start the full Compose integration stack
+        run: docker compose up --build -d --wait
+      - name: Run backend suites with the pinned Maven toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in api-gateway inventory-service payment-service order-service; do
+            case "$service" in
+              api-gateway|inventory-service) schema=inventory_service ;;
+              payment-service) schema=payment_service ;;
+              order-service) schema=order_service ;;
+            esac
+            docker run --rm --network traceforge-network \
+              --mount "type=bind,source=$PWD/services/$service,target=/workspace" \
+              --mount type=volume,source=traceforge-maven-cache,target=/root/.m2 \
+              --workdir /workspace \
+              -e SPRING_PROFILES_ACTIVE=local \
+              -e "TRACEFORGE_DATABASE_URL=jdbc:postgresql://postgres:5432/traceforge?currentSchema=$schema" \
+              -e POSTGRES_USER=traceforge \
+              -e POSTGRES_PASSWORD=traceforge-local-only \
+              -e INVENTORY_SERVICE_URL=http://inventory-service:8081 \
+              -e PAYMENT_SERVICE_URL=http://payment-service:8083 \
+              maven:3.9.16-eclipse-temurin-21 mvn -B test
+          done
