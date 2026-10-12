@@ -1,5 +1,31 @@
 # TraceForge task log
 
+## Phase 4 frontend incident dashboard — 2026-10-12
+
+### Implementation
+
+- Connected the Overview to the real gateway health, incident list/detail, and detection-status APIs. Added open incidents, resolved-history filtering, opaque-cursor pagination, selected evidence details, and a separate per-source freshness panel.
+- Added explicit loading, empty, API-error, stale, partial, unavailable, and not-run states. Empty results and missing/stale sources are not presented as confirmed healthy. No demonstration incidents or synthetic success states were added.
+- Added runtime response-shape validation and safe API error messages. The dashboard only displays trace identifiers when the API returns them.
+- No backend, database, Compose, telemetry, or legacy `SKU-TEST-ORDER` data was changed.
+
+### Checks run in this session
+
+- `cd frontend; npm test` — **passed: 2 test files, 9 tests**.
+- `cd frontend; npm run build` — **passed** (`tsc --noEmit` and Vite production build).
+- Started the Vite development server and queried its `/api` proxy with `Invoke-WebRequest`: gateway health returned **HTTP 200**; `GET /api/v1/incidents?status=OPEN&limit=25` returned **HTTP 200**, zero open items, and `CURRENT` detection status; `GET /api/v1/detection-status` returned **HTTP 200**, `CURRENT`, and five sources. The Vite server started by this check was stopped afterward.
+- `git diff --check` — **passed** before the documentation update; rerun after the final edits below.
+- Browser rendering — **verified on desktop** at `http://127.0.0.1:5173/` in the Codex in-app browser. The Overview showed gateway health, a `CURRENT` completed detection cycle with five `CURRENT` sources, and the honest empty-open-incidents message. Resolved history loaded existing records, and a real resolved `SERVICE_NOT_READY` incident for `api-gateway` displayed its two `CONNECT_FAILED` evidence observations. No incident data was fabricated or changed.
+- Browser checks — viewport 1280×720; document width 1265 px and no horizontal overflow. Browser console error/warning query returned no entries. The browser automation exposed no dedicated network panel; successful live API-backed content was visible, and direct HTTP/Vite-proxy checks above returned HTTP 200. Mobile layout and exhaustive browser workflows remain unverified.
+- `docker compose ps` — **blocked** because this session was denied access to the Docker named pipe. Direct gateway/Vite-proxy HTTP checks succeeded, but Compose health was not freshly verified.
+- The previously reported 53 Investigation tests, 37 Java tests, restart checks, and Tempo/detection integration checks were **not rerun** in this frontend session. Remote CI was **not run or verified**. An `origin` remote is configured, but this branch has no upstream.
+
+### Remaining checks
+
+- Browser rendering closeout is complete for the desktop Overview, empty open state, freshness panel, resolved history, and one real detail view. Do not infer mobile or exhaustive workflow coverage from this check.
+- Compose health was not freshly verified because `docker compose ps` was denied Docker named-pipe access. Remote CI, production authentication/authorization, and separate PostgreSQL role enforcement remain unverified.
+- Preserve the legacy `SKU-TEST-ORDER` inconsistency warning; no database records or named volumes were touched.
+
 ## Phase 4 final backend integration — 2026-10-10
 
 ### Implementation completed
@@ -17,12 +43,12 @@
 - The final live verifier observed: confirmed and fully compensated declined orders created no incident; an incomplete compensation opened one episode and repeated observations updated the same incident; Order unavailability did not resolve that incident and retained persisted last-success freshness; the same incident survived Investigation restart; two UP probes resolved the Order health incident; explicit terminal state plus released inventory resolved the recovery incident; two failed/timeout probes opened an Inventory health incident and two UP probes resolved it; detection completed while Collector was stopped. Collector, Order, and Inventory were restored healthy.
 - Tempo was queried for actual exported traces: success `14654c73679a45bf838ee72a26ffb933` shared the caller-supplied trace ID and parent span across Gateway, Order, Inventory, and Payment; unknown SKU `91b5171abf7e4826b446516b2f0df729` had HTTP 404 and `UNKNOWN_SKU`; payment decline `de6e500a7d0b47b68cf2ae91902991b6` had an `ERROR` payment span and compensation; outage/recovery `d451343aa189419fb49a00e3d62d9753` had a separate recovery trace linked to the originating order span. Collector-outage business behavior still returned HTTP 402 with inventory released.
 - `docker compose config -q` — passed after documentation updates. Final `docker compose ps` showed all **9** project services healthy. `git diff --check` passed after the final documentation update.
-- No frontend tests/build were rerun in this backend-only stage because no frontend files changed. The Phase 3 Chrome Overview spot-check remains the only browser evidence; it was not repeated and was not exhaustive. Remote CI remains unverified because no Git remote is configured.
+- No frontend tests/build were rerun in this backend-only stage because no frontend files changed. The Phase 3 Chrome Overview spot-check remains the only browser evidence at this checkpoint; it was not repeated and was not exhaustive. Remote CI remained unverified because no Git remote was configured at that time.
 - Two earlier verifier attempts left resolved incidents associated with their own generated orders. Each exact row was checked by incident ID, rule, source order ID, scope, and resolved status before removal. The verifier now cleans only order incidents tied to the current run's generated order keys. Resolved `SERVICE_NOT_READY` episodes from controlled service outages remain as incident history; they were not deleted because they share service-level fingerprints with possible real observations.
 
 ### Remaining gaps / next work
 
-- Phase 4 backend detection is locally implemented and verified. The dashboard incident view and browser workflow coverage belong to the next frontend milestone.
+- At this 2026-10-10 backend-only checkpoint, Phase 4 detection was locally implemented and verified; the frontend incident view and browser workflow coverage were the next milestone. The 2026-10-12 frontend implementation and its remaining browser limitation are recorded at the top of this task log.
 - Remote CI, production authentication/authorization and separate database roles remain unverified/out of scope. The `incident_service` schema shares the local PostgreSQL credentials and is an ownership boundary, not a privilege boundary.
 - Preserve the legacy `SKU-TEST-ORDER` data warning below; no legacy stock or reservation rows were changed.
 
@@ -46,7 +72,7 @@
 - `npm test` — passed: 1 file, 2 tests. `npm run build` — passed. The test runner used repo-local ignored temp storage after default Windows sandbox temp failed with `EPERM`.
 - Final post-documentation results: `git diff --check` and `docker compose config -q` passed.
 - A read-only post-documentation `docker compose ps --all` showed all 9 services healthy; in-container `GET /healthz` and `GET /readyz` each returned HTTP 200.
-- Remote CI remains unverified: no Git remote is configured. Browser rendering was not exercised in this stage; only the earlier documented Chrome Overview spot-check is available and is not exhaustive.
+- Remote CI remained unverified at this earlier checkpoint, when no Git remote was configured. Browser rendering was not exercised in that stage; only the earlier documented Chrome Overview spot-check was available and was not exhaustive.
 
 ### Remaining gaps / next milestone
 
@@ -232,9 +258,9 @@ Implemented a separate Payment Service with its own Flyway-managed schema and de
 
 - The local implementation and verification remain as recorded above: two serial backend runs passed 27 tests each, exported Tempo traces covered success and failure/recovery scenarios, Collector-outage behavior passed, frontend tests/build passed, and all eight Compose services were healthy during the recorded run.
 - A manual Chrome spot-check showed the local Overview rendering, `GET /api/v1/health` returning HTTP 200, and the honest empty incident state. DevTools showed one cancelled health request and one successful request while the page remained functional. The cancellation was not diagnosed. The only console message in the supplied output was a `WindowMode` warning from an injected script; no TraceForge application error was identified. This was not exhaustive browser workflow testing.
-- Remote CI remains unverified because no Git remote is configured and no remote run is available.
+- At the 2026-10-10 Phase 3 closeout, no Git remote was configured and remote CI was not run. An `origin` remote is configured in the current checkout, but no remote run is verified for the frontend dashboard.
 - The legacy `SKU-TEST-ORDER` inconsistency documented above remains untouched.
 
 ## Next milestone
 
-Continue Phase 4 by adding a bounded terminal-state signal from Order, a controlled scheduler/trigger and freshness/read APIs, then validate detection activation and resolution end to end. Remote CI remains a separate unverified check.
+The Phase 4 frontend incident dashboard is implemented and its desktop browser closeout is verified. Do not start another phase until the user provides its scope. Remote CI and production authorization/database-role checks remain separate outstanding items.

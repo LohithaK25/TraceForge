@@ -23,7 +23,7 @@ This is a local developer demo, not a production-secure multi-tenant service. Th
 ## Remaining limitations
 
 - Local APIs have no authentication or authorization; recovery routes are for developer use only.
-- Deterministic incident detection is scheduled and has bounded list/detail/status APIs through the gateway, but the frontend has no incident view yet. Local verification passed; remote CI remains unverified because no Git remote is configured. Browser rendering was only spot-checked during Phase 3 and was not rerun during the Phase 4 backend stage.
+- Deterministic incident detection is scheduled and has bounded list/detail/status APIs through the gateway. The frontend incident dashboard consumes those read-only routes and separates source freshness from findings. Frontend unit/build, Vite-proxy smoke checks, and a desktop browser check passed locally on 2026-10-12; mobile/exhaustive browser coverage and remote CI remain unverified. The APIs remain unauthenticated and local-only.
 - `GET /internal/v1/orders/attention` returns active recovery cases. `GET /internal/v1/orders/recovery-observations` supplies explicit state for IDs attached to open recovery incidents. Missing IDs, unavailable sources, and stale observations do not resolve an incident.
 - W3C trace state is propagated on synchronous HTTP edges; background recovery links preserve trace/span IDs but do not restore arbitrary caller `tracestate` or baggage.
 - Compose port exposure and observability access controls require review before any non-local deployment. Tempo filesystem storage, single-instance retention, and local credentials are not production storage or access-control designs.

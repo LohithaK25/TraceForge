@@ -1,6 +1,6 @@
 # ADR 0006: Deterministic incident detection boundaries
 
-- **Status:** Accepted; backend detection, persistence, and read APIs implemented and locally verified (2026-10-10). Frontend incident UI and remote CI remain outstanding.
+- **Status:** Accepted; backend detection, persistence, and read APIs implemented and locally verified (2026-10-10). The frontend incident and freshness views passed local tests/build, Vite-proxy checks, and desktop browser verification on 2026-10-12; mobile/exhaustive browser coverage and remote CI remain unverified.
 - **Date:** 2026-10-10
 
 ## Context
@@ -26,13 +26,13 @@ The Investigation Service runs a configurable single-cycle-at-a-time scheduler. 
 
 The Order Service provides a bounded active recovery feed and `GET /internal/v1/orders/recovery-observations?orderIds=...` for up to 100 unique order IDs already attached to open recovery incidents. The latter reports explicit found terminal state and `missingOrderIds`; missing rows are not interpreted as success. The detector resolves an order incident only on an explicit terminal `CONFIRMED` or `FAILED` observation with required compensation complete. Source failures and stale observations cannot resolve incidents.
 
-The Investigation Service exposes health/readiness internally and bounded `/api/v1/incidents`, `/api/v1/incidents/{id}`, and `/api/v1/detection-status` routes through the Gateway. List requests accept only `OPEN` or `RESOLVED`, cap the page at 100, and use an opaque cursor. Detection status reports the latest persisted cycle and source status separately from incident state. No incident UI exists yet. Tempo remains optional evidence and is not queried by rules. `scripts/test-investigation.ps1` uses disposable tmpfs PostgreSQL; the pinned Java and live Compose verification commands and results are recorded in `TASKS.md`.
+The Investigation Service exposes health/readiness internally and bounded `/api/v1/incidents`, `/api/v1/incidents/{id}`, and `/api/v1/detection-status` routes through the Gateway. List requests accept only `OPEN` or `RESOLVED`, cap the page at 100, and use an opaque cursor. Detection status reports the latest persisted cycle and source status separately from incident state. The React dashboard consumes these routes for open incidents, resolved history, selected incident evidence, and per-source freshness; empty findings and unavailable/stale data remain distinct. The 2026-10-12 frontend tests/build and Vite-proxy HTTP checks passed. Desktop browser verification covered the empty open state, current freshness, resolved history, and real incident detail; mobile/exhaustive browser coverage and remote CI remain unverified. Tempo remains optional evidence and is not queried by rules. `scripts/test-investigation.ps1` uses disposable tmpfs PostgreSQL; the pinned Java and live Compose verification commands and results are recorded in `TASKS.md`.
 
 ## Consequences
 
 - Once invoked, detection can work when traces are missing or Tempo is unavailable; the current engine does not query Tempo and trace references remain optional supporting evidence.
 - The order query reflects persisted current state, not a complete event history. Short-lived states can be missed, and historical error-rate or latency rules require a future durable event/metrics source.
-- Local backend detection, incident persistence/deduplication, freshness, and read APIs are implemented and verified; the frontend incident views, remote CI, production authorization/database roles, and browser workflow coverage remain unverified.
+- Local backend detection, incident persistence/deduplication, freshness, and read APIs are implemented and verified. The dashboard's incident and freshness views are implemented with local frontend and desktop browser checks; mobile/exhaustive browser coverage, remote CI, and production authorization/database roles remain unverified.
 - The detector observes current persisted state rather than a complete event history. Brief states can be missed, and historical rate/latency rules need a separate durable signal source. No resolution is inferred from a missing Order row or failed/stale source.
 - The Compose demo's internal service network is a local boundary, not production authentication or authorization. Do not publish the Order Service port or route this endpoint through the gateway without a separate security decision.
 

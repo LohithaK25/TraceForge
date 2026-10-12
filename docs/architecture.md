@@ -6,7 +6,7 @@ The current sample is a synchronous, persisted saga across separate Spring Boot 
 
 ```mermaid
 flowchart LR
-  Browser[React health dashboard] -->|health only| Gateway[API Gateway]
+  Browser[React incident dashboard] -->|health, incidents, freshness| Gateway[API Gateway]
   Gateway -->|create/read/recover| Order[Order Service]
   Order -->|reserve/release| Inventory[Inventory Service]
   Order -->|authorize| Payment[Payment Service]
@@ -15,6 +15,8 @@ flowchart LR
   Payment --> PaymentDB[(payment_service)]
   Order -. scheduled recovery .-> OrderDB
   Gateway --> Actuator[Actuator readiness]
+  Gateway --> Investigation[Investigation Service]
+  Investigation --> IncidentDB[(incident_service)]
   Gateway -. OTLP HTTP .-> Collector[OpenTelemetry Collector]
   Order -. OTLP HTTP .-> Collector
   Inventory -. OTLP HTTP .-> Collector
@@ -23,7 +25,7 @@ flowchart LR
   Grafana[Grafana Explore] --> Tempo
 ```
 
-The gateway, Tempo query API, and Grafana UI are published only on loopback. Internal service ports, Collector receivers, Collector health, and PostgreSQL are available only on the Compose network. The dashboard reports only gateway health and does not create sample business activity.
+The gateway, Tempo query API, and Grafana UI are published only on loopback. Internal service ports, Collector receivers, Collector health, and PostgreSQL are available only on the Compose network. The dashboard reads gateway health and incident APIs; it does not create sample business activity.
 
 ## Order state machine
 
@@ -135,7 +137,7 @@ At startup, the service launches one scheduled loop, configurable with `TRACEFOR
 
 Open incidents are deduplicated by a stable SHA-256 fingerprint (rule, scope, source), retain at most 20 structured evidence references, increment occurrence count on repeated observations, and can recur as a new episode after resolution. Order's `GET /internal/v1/orders/attention` exposes only active recovery cases. A second bounded private endpoint, `GET /internal/v1/orders/recovery-observations?orderIds=...`, accepts 1–100 unique known order IDs and returns explicit found cases plus `missingOrderIds`. The detector queries this endpoint only for IDs of open recovery incidents that no longer appear in the active feed. It resolves only from an explicit terminal `CONFIRMED` or `FAILED` observation with required compensation complete; missing IDs and unavailable/stale Order reads never resolve.
 
-The Investigation Service exposes `/healthz` and database-backed `/readyz` internally, plus `/api/v1/incidents`, `/api/v1/incidents/{id}`, and `/api/v1/detection-status` on its private network address. The gateway proxies these as `GET /api/v1/incidents` (status `OPEN|RESOLVED`, limit 1–100, opaque cursor), `GET /api/v1/incidents/{id}`, and `GET /api/v1/detection-status`. Gateway-to-Investigation calls use fixed paths, timeouts, bounded response reading, and safe upstream errors. The detection status reports the latest persisted cycle and per-source `CURRENT`, `PARTIAL`, `STALE`, or `UNAVAILABLE` status. The API is read-only; the dashboard does not yet display incidents.
+The Investigation Service exposes `/healthz` and database-backed `/readyz` internally, plus `/api/v1/incidents`, `/api/v1/incidents/{id}`, and `/api/v1/detection-status` on its private network address. The gateway proxies these as `GET /api/v1/incidents` (status `OPEN|RESOLVED`, limit 1–100, opaque cursor), `GET /api/v1/incidents/{id}`, and `GET /api/v1/detection-status`. Gateway-to-Investigation calls use fixed paths, timeouts, bounded response reading, and safe upstream errors. The detection status reports the latest persisted cycle and per-source `CURRENT`, `PARTIAL`, `STALE`, or `UNAVAILABLE` status. The dashboard reads these APIs for open incidents, resolved history, selected evidence details, and source freshness. Empty findings and source freshness remain distinct; failed, stale, partial, or not-run sources are not presented as confirmed health. The frontend does not query PostgreSQL, Investigation Service directly, or Tempo.
 
 Tempo is not queried by the detector; trace IDs are optional evidence references and are not a detection prerequisite. On 2026-10-10, the isolated Investigation suite passed 53 tests, all four Java services passed 37 tests with the pinned JDK 21/Maven toolchain, and live detection tests verified incident opening/deduplication/resolution, failed-source non-resolution, persisted incident/freshness after Investigation restart, bounded APIs, and continued cycles with Collector stopped. Exact output, trace IDs, and remaining environmental caveats are in [TASKS.md](../TASKS.md).
 
@@ -151,9 +153,9 @@ The Compose named volume `traceforge-postgres-data` preserves the Order, Invento
 
 ## Other planned boundaries
 
-- **Telemetry:** distributed traces are implemented as described above. Metrics/log exporters, Loki, Prometheus, Tempo-based detection, and an observability-driven dashboard are out of scope.
-- **Detection interface:** the next step is a dashboard for real incident and detection-status APIs, with explicit loading, empty, unavailable, and partial-data states. Browser workflow coverage remains future work.
+- **Telemetry:** distributed traces are implemented as described above. Metrics/log exporters, Loki, Prometheus, and Tempo-based detection are out of scope. The incident dashboard does not query telemetry directly.
+- **Detection interface:** the dashboard consumes the real incident and detection-status APIs and separates loading, empty, error, and source-freshness states. Desktop browser verification covered the empty open state, current freshness, resolved history, and a real detail view; mobile and exhaustive browser workflows remain unverified.
 - **Investigation workflows:** extend the existing FastAPI service with activation, incident reads, normalized evidence, deterministic investigations, constrained provider adapters, validated citations, and evaluation.
-- **Dashboard:** consume real incident/order APIs with explicit unavailable and partial-data states; no direct database or observability queries.
+- **Dashboard boundary:** use gateway APIs only; no direct database or observability queries. Trace references are displayed only when returned by the incident API.
 
 See [roadmap.md](roadmap.md), [security.md](security.md), [adr/0004-persisted-payment-saga.md](adr/0004-persisted-payment-saga.md), and [adr/0005-distributed-tracing.md](adr/0005-distributed-tracing.md).

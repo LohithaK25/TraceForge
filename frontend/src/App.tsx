@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { getApiHealth, type ApiHealth } from "./api/health";
+import { IncidentDashboard } from "./components/IncidentDashboard";
 import { HealthStatus } from "./components/HealthStatus";
 
 type ConnectionState = "loading" | "ready" | "unavailable";
@@ -53,9 +54,9 @@ export default function App() {
             <div>
               <p className="eyebrow">INCIDENT RESPONSE</p>
               <h1 id="page-title">Overview</h1>
-              <p className="subtitle">A clear view of what the system has observed.</p>
+              <p className="subtitle">Live incident findings and detection-source freshness from the TraceForge APIs.</p>
             </div>
-            <div className="date-chip"><span className="calendar-icon" aria-hidden="true">▦</span> Live workspace</div>
+            <div className="date-chip"><span className="calendar-icon" aria-hidden="true">▦</span> API data</div>
           </section>
 
           <section className="connection-card" aria-labelledby="connection-title">
@@ -70,24 +71,12 @@ export default function App() {
           <section className="signals-section" aria-labelledby="signals-title">
             <div className="section-heading">
               <div>
-                <span className="section-kicker">SIGNAL SUMMARY</span>
+                <span className="section-kicker">INVESTIGATION SERVICE</span>
                 <h2 id="signals-title">Incident activity</h2>
               </div>
-              <span className="data-label">LIVE DATA ONLY</span>
+              <span className="data-label">LIVE API DATA</span>
             </div>
-            <div className="empty-panel">
-              <div className="empty-icon" aria-hidden="true">
-                <svg viewBox="0 0 48 48" fill="none">
-                  <path d="M8 35.5h32M12 30V18m8 12V12m8 18V22m8 8V15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  <circle cx="12" cy="15" r="2" fill="currentColor" />
-                  <circle cx="36" cy="12" r="2" fill="currentColor" />
-                </svg>
-              </div>
-              <h3>Incident data is not connected yet</h3>
-              <p>Once detection APIs are available, real incidents and service signals will appear here. No sample telemetry is being shown.</p>
-              <div className="empty-divider" />
-              <div className="next-step"><span className="step-number">01</span><span>Gateway health is the first API contract in this workspace.</span></div>
-            </div>
+            <IncidentDashboard />
           </section>
 
           <footer className="page-footer">

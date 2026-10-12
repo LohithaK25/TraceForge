@@ -1,6 +1,6 @@
 # TraceForge
 
-TraceForge is an evidence-first distributed incident investigation project. Its runnable sample application now demonstrates a durable order → inventory reservation → payment authorization saga. The dashboard still shows only live gateway health; it does not invent orders, payments, incidents, traces, metrics, or investigation results.
+TraceForge is an evidence-first distributed incident investigation project. Its runnable sample application demonstrates a durable order → inventory reservation → payment authorization saga. The dashboard shows live gateway health, API-backed incidents, and detection-source freshness; it does not invent orders, payments, incidents, traces, metrics, or investigation results.
 
 ## Current implementation
 
@@ -8,8 +8,8 @@ TraceForge is an evidence-first distributed incident investigation project. Its 
 - Orders, reservations, and payment attempts use separate PostgreSQL schemas and Flyway migrations on the persistent `traceforge-postgres-data` volume.
 - Order creation uses a required client idempotency key. Inventory reservation, inventory release, and payment authorization are each idempotent at their service boundary.
 - A persisted recovery worker resumes uncertain operations and compensation. See [docs/architecture.md](docs/architecture.md) for the state machine and consistency limits.
-- All four Java services use the same pinned OpenTelemetry Java agent. The local Collector exports traces to Tempo, which Grafana Explore can query. The dashboard remains health-only; it does not fabricate trace or incident data.
-- Phase 4 has an internal Python/FastAPI investigation service that runs scheduled deterministic health and recovery detection, persists incidents and source freshness in the `incident_service` schema, and exposes bounded read APIs through the gateway. The dashboard does not yet display incidents.
+- All four Java services use the same pinned OpenTelemetry Java agent. The local Collector exports traces to Tempo, which Grafana Explore can query. The dashboard displays trace references only when the API supplies them; it does not fabricate trace data.
+- The Python/FastAPI investigation service runs scheduled deterministic health and recovery detection, persists incidents and source freshness in the `incident_service` schema, and exposes bounded read APIs through the gateway. The dashboard lists open incidents, resolved history, selected incident details, and source freshness from those APIs.
 - The payment provider is a deterministic local simulator. No real payment rail, card number, or other payment credential is accepted or processed.
 
 ## Prerequisites
@@ -38,7 +38,7 @@ npm ci
 npm run dev
 ```
 
-Open the Vite URL printed by the command. The dashboard checks `GET /api/v1/health` through the Vite proxy and remains health-only.
+Open the Vite URL printed by the command. The overview checks `GET /api/v1/health` and reads `GET /api/v1/incidents?status=OPEN&limit=25` plus `GET /api/v1/detection-status` through the Vite proxy. The resolved-history filter uses the same incident-list endpoint with `status=RESOLVED`; selecting an item reads `GET /api/v1/incidents/{id}`. Empty incident results and detection-source freshness are shown separately, so an empty list or stale source is not presented as proof of health.
 
 ## Order API
 
@@ -127,6 +127,8 @@ Invoke-RestMethod 'http://localhost:8080/api/v1/incidents/{incident-id}'
 
 Incident listing supports `OPEN` or `RESOLVED`, an optional opaque cursor, and a strict 1–100 item limit. The detection-status response includes the latest persisted cycle and per-source freshness. Reproduce the live synthetic scenarios with `scripts/verify-detection.ps1`; `scripts/test-backend.ps1` runs it after backend and Tempo checks. This script temporarily stops Order, Inventory, and the optional Collector for controlled checks, restores them in `finally`, and cleans its run-scoped business rows and order incidents. Resolved service-health incidents from the simulated outages remain as incident history.
 
+The dashboard consumes these read-only contracts through the gateway. Its incident list is paginated with an opaque cursor, resolved history is available through the status filter, and each selected incident can load bounded evidence details. Detection freshness is independent of incident state; unavailable, stale, partial, or not-yet-run sources are described as unconfirmed rather than healthy.
+
 ## Consistency guarantees and limits
 
 Each service commits only to its own schema; there is no distributed transaction. The order row is durable before downstream calls. Inventory commits a stock decrement and reservation together; release restores that quantity and records `released_at` in one transaction and is idempotent by order ID. Payment commits an authorization/decline keyed by the order UUID. The saga uses persisted state transitions and compare-and-set updates, idempotency keys, bounded retries, and compensation.
@@ -151,9 +153,11 @@ The backend script builds/starts the full Compose stack, runs Gateway, Inventory
 
 `scripts/test-investigation.ps1` builds the pinned Python investigation image and runs its tests against a separate PostgreSQL service using tmpfs storage and an isolated Compose project; it does not use the persistent application schemas or volumes. It removes only that temporary test database container when finished.
 
-On 2026-10-10, Phase 3 local verification queried real Tempo traces for success, unknown SKU, payment decline/compensation, and payment outage/recovery, including the caller-supplied W3C trace context and a recovery link. The earlier Chrome Overview spot-check showed gateway health HTTP 200 and the honest empty incident state; one cancelled health request was not diagnosed, and this was not exhaustive browser workflow testing. Remote CI remains unverified because no Git remote is configured.
+On 2026-10-10, Phase 3 local verification queried real Tempo traces for success, unknown SKU, payment decline/compensation, and payment outage/recovery, including the caller-supplied W3C trace context and a recovery link. The earlier Chrome Overview spot-check showed gateway health HTTP 200 and the honest empty incident state; one cancelled health request was not diagnosed, and this was not exhaustive browser workflow testing. Remote CI was not run for that verification.
 
 On 2026-10-10, the Phase 4 backend integration passed locally: `scripts/test-investigation.ps1` passed **53 tests** against its disposable tmpfs database. The final `scripts/test-backend.ps1` run passed **37 Java tests** (Gateway 3, Inventory 8, Payment 4, Order 22), saga recovery/restart assertions, and live Tempo and incident-detection verifiers. It verified incident opening, deduplication, source failure non-resolution, explicit terminal compensation resolution, persistence across Investigation restart, two-probe health opening/resolution, and detection continuing while the Collector was stopped. All **9** Compose services were healthy afterward; `docker compose config -q` and `git diff --check` passed. Frontend tests/build were not rerun in this backend-only stage because no frontend files changed; the earlier Phase 3 frontend results remain documented. The `SKU-TEST-ORDER` warning remains unchanged. Exact commands and trace evidence are in [TASKS.md](TASKS.md).
+
+On 2026-10-12, the incident dashboard passed `npm test` (**9 tests**) and `npm run build`. Read-only requests through the Vite proxy returned HTTP 200 for gateway health, open incidents, and detection status; the open list was empty and detection status was `CURRENT` with five sources. A desktop browser check verified the Overview, honest empty-open state, current freshness panel, resolved history, and a real resolved incident detail. The browser console had no errors or warnings, and the page had no horizontal overflow at 1280×720. Mobile rendering and exhaustive browser workflows remain unverified. `docker compose ps` was blocked by Docker named-pipe permissions, so Compose health was not freshly checked. The previously reported backend tests were not rerun. `origin` is configured, but remote CI has not been run or verified for this frontend change. The `SKU-TEST-ORDER` warning remains unchanged.
 
 ## Stop and reset
 
