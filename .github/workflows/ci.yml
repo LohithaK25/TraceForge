@@ -25,6 +25,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and start the full Compose integration stack
         run: docker compose up --build -d --wait
+      - name: Run isolated Investigation unit and PostgreSQL integration tests
+        shell: pwsh
+        run: ./scripts/test-investigation.ps1
       - name: Run backend suites with the pinned Maven toolchain
         shell: bash
         run: |
@@ -47,3 +50,6 @@ jobs:
               -e PAYMENT_SERVICE_URL=http://payment-service:8083 \
               maven:3.9.16-eclipse-temurin-21 mvn -B test
           done
+      - name: Verify exported distributed traces against Tempo
+        shell: pwsh
+        run: ./scripts/verify-traces.ps1

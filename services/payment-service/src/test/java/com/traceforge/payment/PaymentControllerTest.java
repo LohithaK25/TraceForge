@@ -2,6 +2,8 @@ package com.traceforge.payment;
 
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,9 +29,24 @@ class PaymentControllerTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    private String testRunId;
+
+    @BeforeEach
+    void startTestDataScope() {
+        testRunId = UUID.randomUUID().toString();
+    }
+
+    @AfterEach
+    void removeTestPaymentAttempts() {
+        String keyPattern = "payment-test-" + testRunId + "-%";
+        jdbcTemplate.update("DELETE FROM payment_attempts WHERE idempotency_key LIKE ?", keyPattern);
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM payment_attempts WHERE idempotency_key LIKE ?", Integer.class, keyPattern));
+    }
+
     @Test
     void authorizationIsPersistedAndIdempotentByKey() throws Exception {
-        String key = "payment-test-" + UUID.randomUUID();
+        String key = paymentKey();
         UUID orderId = UUID.randomUUID();
         String body = "{\"orderId\":\"" + orderId + "\",\"amountMinor\":300}";
         var first = mockMvc.perform(post("/internal/v1/payments/authorizations")
@@ -59,7 +76,7 @@ class PaymentControllerTest {
 
     @Test
     void deterministicDeclineIsStoredAndUnavailableDoesNotCreateAnAttempt() throws Exception {
-        String declineKey = "payment-test-" + UUID.randomUUID();
+        String declineKey = paymentKey();
         mockMvc.perform(post("/internal/v1/payments/authorizations")
                         .header("Idempotency-Key", declineKey)
                         .header("X-TraceForge-Failure", "payment-decline")
@@ -70,7 +87,7 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.authorizationId").isEmpty());
         assertEquals(1, count(declineKey));
 
-        String unavailableKey = "payment-test-" + UUID.randomUUID();
+        String unavailableKey = paymentKey();
         mockMvc.perform(post("/internal/v1/payments/authorizations")
                         .header("Idempotency-Key", unavailableKey)
                         .header("X-TraceForge-Failure", "payment-unavailable")
@@ -103,5 +120,9 @@ class PaymentControllerTest {
     private int count(String key) {
         return jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM payment_attempts WHERE idempotency_key = ?", Integer.class, key);
+    }
+
+    private String paymentKey() {
+        return "payment-test-" + testRunId + "-" + UUID.randomUUID();
     }
 }

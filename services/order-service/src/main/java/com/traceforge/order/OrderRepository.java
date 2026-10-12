@@ -3,10 +3,12 @@ package com.traceforge.order;
 import java.sql.Types;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import io.opentelemetry.api.trace.SpanContext;
 import org.springframework.http.HttpStatus;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -20,22 +22,30 @@ public class OrderRepository {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    public OrderCreation createOrFind(String idempotencyKey, String sku, int quantity) {
+    public OrderCreation createOrFind(String idempotencyKey, String sku, int quantity, SpanContext origin) {
         UUID id = UUID.randomUUID();
         Instant now = Instant.now();
         int inserted = jdbcTemplate.update(connection -> {
             var statement = connection.prepareStatement(
                     "INSERT INTO orders (id, idempotency_key, sku, quantity, status, failure_reason, "
-                            + "inventory_reservation_id, payment_authorization_id, inventory_released, recovery_attempts, next_recovery_at, created_at, updated_at) "
-                            + "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, FALSE, 0, now() + interval '15 seconds', ?, ?) "
+                            + "inventory_reservation_id, payment_authorization_id, inventory_released, recovery_attempts, "
+                            + "next_recovery_at, origin_trace_id, origin_span_id, created_at, updated_at) "
+                            + "VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, FALSE, 0, now() + interval '15 seconds', ?, ?, ?, ?) "
                             + "ON CONFLICT (idempotency_key) DO NOTHING");
             statement.setObject(1, id, Types.OTHER);
             statement.setString(2, idempotencyKey);
             statement.setString(3, sku);
             statement.setInt(4, quantity);
             statement.setString(5, OrderStatus.PENDING.name());
-            statement.setTimestamp(6, Timestamp.from(now));
-            statement.setTimestamp(7, Timestamp.from(now));
+            if (origin != null && origin.isValid()) {
+                statement.setString(6, origin.getTraceId());
+                statement.setString(7, origin.getSpanId());
+            } else {
+                statement.setNull(6, Types.VARCHAR);
+                statement.setNull(7, Types.VARCHAR);
+            }
+            statement.setTimestamp(8, Timestamp.from(now));
+            statement.setTimestamp(9, Timestamp.from(now));
             return statement;
         });
         OrderRecord existing = findByIdempotencyKey(idempotencyKey).orElseThrow();
@@ -100,6 +110,20 @@ public class OrderRepository {
                 + "payment_authorization_id, inventory_released, created_at, updated_at FROM orders WHERE idempotency_key = ?", idempotencyKey);
     }
 
+    public Optional<SpanContext> findOriginSpanContext(UUID id) {
+        List<String[]> rows = jdbcTemplate.query(
+                "SELECT origin_trace_id, origin_span_id FROM orders WHERE id = ?",
+                (resultSet, rowNumber) -> new String[] {
+                    resultSet.getString("origin_trace_id"), resultSet.getString("origin_span_id")
+                },
+                id);
+        return rows.stream()
+                .filter(row -> row[0] != null && row[1] != null)
+                .map(row -> OrderTracing.remoteSpanContext(row[0], row[1]))
+                .filter(SpanContext::isValid)
+                .findFirst();
+    }
+
     public List<UUID> findRecoverableIds(int limit) {
         return jdbcTemplate.query(
                 "SELECT id FROM orders WHERE status IN ('PENDING', 'INVENTORY_RESERVED', 'PAYMENT_AUTHORIZED', 'COMPENSATION_REQUIRED') "
@@ -107,6 +131,63 @@ public class OrderRepository {
                         + "AND recovery_attempts < 10 AND next_recovery_at <= now() ORDER BY next_recovery_at, created_at LIMIT ?",
                 (resultSet, rowNumber) -> resultSet.getObject("id", UUID.class),
                 limit);
+    }
+
+    public List<OrderAttention> findRecoveryAttention(int limit, Instant afterCreatedAt, UUID afterId) {
+        if ((afterCreatedAt == null) != (afterId == null)) {
+            throw new IllegalArgumentException("Both recovery attention cursor fields must be provided together");
+        }
+
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, status, failure_reason, recovery_error, recovery_attempts, next_recovery_at, "
+                        + "inventory_released, created_at, updated_at, origin_trace_id "
+                        + "FROM orders "
+                        + "WHERE status IN ('PENDING', 'INVENTORY_RESERVED', 'PAYMENT_AUTHORIZED', 'COMPENSATION_REQUIRED') "
+                        + "AND (recovery_error IS NOT NULL OR status = 'COMPENSATION_REQUIRED' OR next_recovery_at <= now())");
+        List<Object> parameters = new ArrayList<>();
+        if (afterCreatedAt != null) {
+            sql.append(" AND (created_at, id) > (?, ?)");
+            parameters.add(Timestamp.from(afterCreatedAt));
+            parameters.add(afterId);
+        }
+        sql.append(" ORDER BY created_at ASC, id ASC LIMIT ?");
+        parameters.add(limit);
+
+        return jdbcTemplate.query(sql.toString(), (resultSet, rowNumber) -> new OrderAttention(
+                resultSet.getObject("id", UUID.class),
+                OrderStatus.valueOf(resultSet.getString("status")),
+                resultSet.getString("failure_reason"),
+                resultSet.getString("recovery_error"),
+                resultSet.getInt("recovery_attempts"),
+                resultSet.getTimestamp("next_recovery_at").toInstant(),
+                resultSet.getBoolean("inventory_released"),
+                resultSet.getTimestamp("created_at").toInstant(),
+                resultSet.getTimestamp("updated_at").toInstant(),
+                resultSet.getString("origin_trace_id")),
+                parameters.toArray());
+    }
+
+    public List<OrderAttention> findRecoveryObservations(List<UUID> orderIds) {
+        if (orderIds.isEmpty() || orderIds.size() > 100) {
+            throw new IllegalArgumentException("Order recovery observation lookup must contain 1 to 100 IDs");
+        }
+        String placeholders = String.join(",", java.util.Collections.nCopies(orderIds.size(), "?"));
+        return jdbcTemplate.query(
+                "SELECT id, status, failure_reason, recovery_error, recovery_attempts, next_recovery_at, "
+                        + "inventory_released, created_at, updated_at, origin_trace_id FROM orders WHERE id IN ("
+                        + placeholders + ") ORDER BY created_at ASC, id ASC",
+                (resultSet, rowNumber) -> new OrderAttention(
+                        resultSet.getObject("id", UUID.class),
+                        OrderStatus.valueOf(resultSet.getString("status")),
+                        resultSet.getString("failure_reason"),
+                        resultSet.getString("recovery_error"),
+                        resultSet.getInt("recovery_attempts"),
+                        resultSet.getTimestamp("next_recovery_at").toInstant(),
+                        resultSet.getBoolean("inventory_released"),
+                        resultSet.getTimestamp("created_at").toInstant(),
+                        resultSet.getTimestamp("updated_at").toInstant(),
+                        resultSet.getString("origin_trace_id")),
+                orderIds.toArray());
     }
 
     private Optional<OrderRecord> findOne(String sql, Object parameter) {

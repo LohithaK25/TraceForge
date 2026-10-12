@@ -1,4 +1,56 @@
 services:
+  tempo:
+    image: traceforge/tempo:3.1.0-local
+    build:
+      context: ./observability/tempo
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "127.0.0.1:3200:3200"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  otel-collector:
+    image: traceforge/otel-collector:0.143.0-local
+    build:
+      context: ./observability/otel-collector
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:13133/ >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:12.4.12
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-traceforge-local-only}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      tempo:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -25,9 +77,21 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
       TRACEFORGE_INVENTORY_DEMO_SKU: SKU-ALPHA
       TRACEFORGE_INVENTORY_DEMO_QUANTITY: 12
+      OTEL_SERVICE_NAME: inventory-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=local
+      OTEL_JAVAAGENT_ENABLED: ${TRACEFORGE_TRACING_ENABLED:-true}
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       postgres:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/actuator/health | grep -q 'UP'"]
       interval: 10s
@@ -44,9 +108,21 @@ services:
       TRACEFORGE_DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-traceforge}?currentSchema=payment_service
       POSTGRES_USER: ${POSTGRES_USER:-traceforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
+      OTEL_SERVICE_NAME: payment-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=local
+      OTEL_JAVAAGENT_ENABLED: ${TRACEFORGE_TRACING_ENABLED:-true}
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       postgres:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/actuator/health | grep -q 'UP'"]
       interval: 10s
@@ -65,6 +141,16 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
       INVENTORY_SERVICE_URL: http://inventory-service:8081
       PAYMENT_SERVICE_URL: http://payment-service:8083
+      OTEL_SERVICE_NAME: order-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=local
+      OTEL_JAVAAGENT_ENABLED: ${TRACEFORGE_TRACING_ENABLED:-true}
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,6 +158,8 @@ services:
         condition: service_healthy
       payment-service:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/actuator/health | grep -q 'UP'"]
       interval: 10s
@@ -86,11 +174,26 @@ services:
       SERVER_PORT: 8080
       INVENTORY_SERVICE_URL: http://inventory-service:8081
       ORDER_SERVICE_URL: http://order-service:8082
+      INVESTIGATION_SERVICE_URL: http://investigation-service:8090
+      OTEL_SERVICE_NAME: api-gateway
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=local
+      OTEL_JAVAAGENT_ENABLED: ${TRACEFORGE_TRACING_ENABLED:-true}
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       inventory-service:
         condition: service_healthy
       order-service:
         condition: service_healthy
+      investigation-service:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
     ports:
       - "127.0.0.1:${SERVER_PORT:-8080}:8080"
     healthcheck:
@@ -100,9 +203,73 @@ services:
       retries: 5
       start_period: 20s
 
+  investigation-service:
+    build:
+      context: ./investigation
+      target: base
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ${POSTGRES_DB:-traceforge}
+      DATABASE_USER: ${POSTGRES_USER:-traceforge}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-traceforge-local-only}
+      GATEWAY_BASE_URL: http://api-gateway:8080
+      ORDER_BASE_URL: http://order-service:8082
+      INVENTORY_BASE_URL: http://inventory-service:8081
+      PAYMENT_BASE_URL: http://payment-service:8083
+      TRACEFORGE_REQUEST_TIMEOUT_SECONDS: 2
+      TRACEFORGE_CONNECT_TIMEOUT_SECONDS: 0.5
+      TRACEFORGE_SOURCE_STALE_SECONDS: 30
+      TRACEFORGE_RECOVERY_GRACE_SECONDS: 30
+      TRACEFORGE_DETECTION_INTERVAL_SECONDS: ${TRACEFORGE_DETECTION_INTERVAL_SECONDS:-5}
+      TRACEFORGE_ORDER_TERMINAL_LOOKUP_LIMIT: ${TRACEFORGE_ORDER_TERMINAL_LOOKUP_LIMIT:-500}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/readyz', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  incident-test-postgres:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: traceforge_incident_test
+      POSTGRES_USER: traceforge_test
+      POSTGRES_PASSWORD: ${TRACEFORGE_TEST_DB_PASSWORD:-traceforge-test-only}
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  investigation-test:
+    profiles: ["test"]
+    build:
+      context: ./investigation
+      target: test
+    command: ["pytest", "-q"]
+    environment:
+      TEST_DATABASE_HOST: incident-test-postgres
+      TEST_DATABASE_PORT: 5432
+      TEST_DATABASE_NAME: traceforge_incident_test
+      TEST_DATABASE_USER: traceforge_test
+      TEST_DATABASE_PASSWORD: ${TRACEFORGE_TEST_DB_PASSWORD:-traceforge-test-only}
+    depends_on:
+      incident-test-postgres:
+        condition: service_healthy
+
 volumes:
   postgres-data:
     name: traceforge-postgres-data
+  tempo-data:
+    name: traceforge-tempo-data
 
 networks:
   default:

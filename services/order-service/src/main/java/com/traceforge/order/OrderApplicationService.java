@@ -1,7 +1,11 @@
 package com.traceforge.order;
 
 import java.util.UUID;
+import java.time.Instant;
+import java.util.List;
 
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.context.Scope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -18,23 +22,38 @@ public class OrderApplicationService {
     private final OrderRepository orderRepository;
     private final InventoryClient inventoryClient;
     private final PaymentClient paymentClient;
+    private final OrderTracing tracing;
 
     public OrderApplicationService(
             OrderRepository orderRepository,
             InventoryClient inventoryClient,
-            PaymentClient paymentClient) {
+            PaymentClient paymentClient,
+            OrderTracing tracing) {
         this.orderRepository = orderRepository;
         this.inventoryClient = inventoryClient;
         this.paymentClient = paymentClient;
+        this.tracing = tracing;
     }
 
     public OrderRecord create(CreateOrderRequest request, String idempotencyKey, String failureScenario) {
-        OrderRepository.OrderCreation creation = orderRepository.createOrFind(
-                idempotencyKey, request.sku(), request.quantity());
-        if (!creation.created()) {
-            return creation.order();
+        Span span = tracing.startCreateSpan();
+        try (Scope scope = span.makeCurrent()) {
+            OrderRepository.OrderCreation creation = orderRepository.createOrFind(
+                    idempotencyKey, request.sku(), request.quantity(), span.getSpanContext());
+            if (!creation.created()) {
+                span.setAttribute("order.idempotency.replay", true);
+                tracing.recordResult(span, creation.order());
+                return creation.order();
+            }
+            OrderRecord order = advance(creation.order().id(), failureScenario);
+            tracing.recordResult(span, order);
+            return order;
+        } catch (RuntimeException exception) {
+            tracing.recordException(span, exception);
+            throw exception;
+        } finally {
+            span.end();
         }
-        return advance(creation.order().id(), failureScenario);
     }
 
     public OrderRecord get(UUID id) {
@@ -42,17 +61,30 @@ public class OrderApplicationService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found"));
     }
 
-    public OrderRecord recover(UUID id) {
-        if (orderRepository.findById(id).isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Order not found");
+    public OrderAttentionPage findRecoveryAttention(int limit, Instant afterCreatedAt, UUID afterId) {
+        List<OrderAttention> rows = orderRepository.findRecoveryAttention(limit + 1, afterCreatedAt, afterId);
+        boolean hasMore = rows.size() > limit;
+        List<OrderAttention> items = List.copyOf(rows.subList(0, Math.min(limit, rows.size())));
+        OrderAttentionPage.Cursor nextCursor = null;
+        if (hasMore) {
+            OrderAttention last = items.get(items.size() - 1);
+            nextCursor = new OrderAttentionPage.Cursor(last.createdAt(), last.orderId());
         }
-        return advance(id, null);
+        return new OrderAttentionPage(items, limit, nextCursor);
+    }
+
+    public List<OrderAttention> findRecoveryObservations(List<UUID> orderIds) {
+        return orderRepository.findRecoveryObservations(orderIds);
+    }
+
+    public OrderRecord recover(UUID id) {
+        return recover(id, false);
     }
 
     public void recoverPending() {
         for (UUID id : orderRepository.findRecoverableIds(100)) {
             try {
-                OrderRecord order = advance(id, null);
+                OrderRecord order = recover(id, true);
                 log.info("order recovery checked id={} status={} recoveryError={}", id, order.status(), order.recoveryError());
             } catch (RuntimeException exception) {
                 // One failed item must not prevent recovery attempts for the remaining durable work.
@@ -65,6 +97,22 @@ public class OrderApplicationService {
                 });
                 log.warn("order recovery attempt failed id={} exceptionType={}", id, exception.getClass().getSimpleName());
             }
+        }
+    }
+
+    private OrderRecord recover(UUID id, boolean scheduled) {
+        Span span = tracing.startRecoverySpan(scheduled, orderRepository.findOriginSpanContext(id));
+        try (Scope scope = span.makeCurrent()) {
+            span.setAttribute("order.id", id.toString());
+            get(id);
+            OrderRecord recovered = advance(id, null);
+            tracing.recordResult(span, recovered);
+            return recovered;
+        } catch (RuntimeException exception) {
+            tracing.recordException(span, exception);
+            throw exception;
+        } finally {
+            span.end();
         }
     }
 

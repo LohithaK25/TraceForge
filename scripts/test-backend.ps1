@@ -54,3 +54,15 @@ Write-Host 'Running live HTTP recovery and restart assertions'
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
+
+Write-Host 'Running live OpenTelemetry propagation and Tempo trace assertions'
+& (Join-Path $PSScriptRoot 'verify-traces.ps1')
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+Write-Host 'Running live deterministic incident detection assertions'
+& (Join-Path $PSScriptRoot 'verify-detection.ps1')
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}

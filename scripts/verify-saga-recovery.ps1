@@ -1,6 +1,9 @@
 $ErrorActionPreference = 'Stop'
 
 $baseUrl = 'http://localhost:8080'
+. (Join-Path $PSScriptRoot 'TraceForgeTestData.ps1')
+$testSku = New-TraceForgeTestSku -Prefix 'SAGA' -Quantity 100
+$testKeys = [System.Collections.Generic.List[string]]::new()
 
 function Invoke-TraceForgeRequest {
     param(
@@ -30,7 +33,7 @@ function Invoke-TraceForgeRequest {
 }
 
 function Get-TestStock {
-    $response = Invoke-TraceForgeRequest -Method Get -Path '/api/v1/inventory/SKU-TEST-ORDER'
+    $response = Invoke-TraceForgeRequest -Method Get -Path "/api/v1/inventory/$testSku"
     if ($response.Status -ne 200) { throw "Inventory read failed with HTTP $($response.Status)" }
     return [int] $response.Body.availableQuantity
 }
@@ -64,11 +67,13 @@ function Assert-Status {
     }
 }
 
+try {
 $stockBefore = Get-TestStock
 $key = "restart-recovery-$([guid]::NewGuid())"
+$testKeys.Add($key)
 $created = Invoke-TraceForgeRequest -Method Post -Path '/api/v1/orders' `
     -Headers @{ 'Idempotency-Key' = $key; 'X-TraceForge-Failure' = 'payment-unavailable' } `
-    -Body '{"sku":"SKU-TEST-ORDER","quantity":1}'
+    -Body (@{ sku = $testSku; quantity = 1 } | ConvertTo-Json -Compress)
 Assert-Status $created 503 'payment-unavailable order'
 if ($created.Body.status -ne 'INVENTORY_RESERVED' -or -not $created.Body.inventoryReservationId) {
     throw 'Expected a persisted reservation and recoverable payment state before restarting services'
@@ -99,15 +104,16 @@ Write-Host 'PASS: reserved order and stock persisted across restarts; repeated r
 
 $stockBeforePaymentTimeout = Get-TestStock
 $timeoutKey = "payment-timeout-restart-$([guid]::NewGuid())"
+$testKeys.Add($timeoutKey)
 $paymentTimeout = Invoke-TraceForgeRequest -Method Post -Path '/api/v1/orders' `
     -Headers @{ 'Idempotency-Key' = $timeoutKey; 'X-TraceForge-Failure' = 'payment-timeout-after-commit' } `
-    -Body '{"sku":"SKU-TEST-ORDER","quantity":1}'
+    -Body (@{ sku = $testSku; quantity = 1 } | ConvertTo-Json -Compress)
 Assert-Status $paymentTimeout 503 'payment timeout after commit'
 if ($paymentTimeout.Body.status -ne 'INVENTORY_RESERVED') { throw 'Expected authorization outcome to remain recoverable after timeout' }
 $orderId = [string] $paymentTimeout.Body.id
-$persistedAuthorization = (& docker compose exec -T postgres psql -U traceforge -d traceforge -Atc `
-    "SELECT authorization_id FROM payment_service.payment_attempts WHERE order_id = '$orderId'").Trim()
-if ($LASTEXITCODE -ne 0 -or -not $persistedAuthorization) { throw 'Payment authorization was not persisted before the induced timeout' }
+$persistedAuthorization = Invoke-TraceForgePostgresSql `
+    -Sql "SELECT authorization_id FROM payment_service.payment_attempts WHERE order_id = '$orderId'"
+if (-not $persistedAuthorization) { throw 'Payment authorization was not persisted before the induced timeout' }
 
 & docker compose stop order-service | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not stop order-service before payment restart' }
@@ -127,9 +133,10 @@ Write-Host 'PASS: payment authorization persisted across Payment Service restart
 
 $stockBeforeCompensation = Get-TestStock
 $compensationKey = "compensation-restart-$([guid]::NewGuid())"
+$testKeys.Add($compensationKey)
 $compensation = Invoke-TraceForgeRequest -Method Post -Path '/api/v1/orders' `
     -Headers @{ 'Idempotency-Key' = $compensationKey; 'X-TraceForge-Failure' = 'payment-decline-compensation-unavailable' } `
-    -Body '{"sku":"SKU-TEST-ORDER","quantity":1}'
+    -Body (@{ sku = $testSku; quantity = 1 } | ConvertTo-Json -Compress)
 Assert-Status $compensation 503 'failed compensation'
 if ($compensation.Body.status -ne 'COMPENSATION_REQUIRED') { throw 'Expected compensation to remain visibly pending' }
 if ((Get-TestStock) -ne ($stockBeforeCompensation - 1)) { throw 'Expected the reservation to remain held while compensation was pending' }
@@ -145,3 +152,6 @@ if ($compensatedAgain.Body.status -ne 'FAILED' -or (Get-TestStock) -ne $stockBef
     throw 'Repeated recovery changed the compensated order or stock quantity'
 }
 Write-Host 'PASS: compensation intent survived restart, released inventory once, and remained terminal'
+} finally {
+    Remove-TraceForgeTestData -IdempotencyKeys $testKeys.ToArray() -Skus @($testSku)
+}

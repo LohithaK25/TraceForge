@@ -8,6 +8,8 @@ TraceForge is an evidence-first distributed incident investigation project. Its 
 - Orders, reservations, and payment attempts use separate PostgreSQL schemas and Flyway migrations on the persistent `traceforge-postgres-data` volume.
 - Order creation uses a required client idempotency key. Inventory reservation, inventory release, and payment authorization are each idempotent at their service boundary.
 - A persisted recovery worker resumes uncertain operations and compensation. See [docs/architecture.md](docs/architecture.md) for the state machine and consistency limits.
+- All four Java services use the same pinned OpenTelemetry Java agent. The local Collector exports traces to Tempo, which Grafana Explore can query. The dashboard remains health-only; it does not fabricate trace or incident data.
+- Phase 4 has an internal Python/FastAPI investigation service that runs scheduled deterministic health and recovery detection, persists incidents and source freshness in the `incident_service` schema, and exposes bounded read APIs through the gateway. The dashboard does not yet display incidents.
 - The payment provider is a deterministic local simulator. No real payment rail, card number, or other payment credential is accepted or processed.
 
 ## Prerequisites
@@ -26,7 +28,7 @@ From the repository root:
 docker compose up --build -d --wait
 ```
 
-Only the gateway is published, on `127.0.0.1:8080`. Order, Inventory, Payment, and PostgreSQL have no host-published ports. Compose enables the `local` Spring profile for this demo, which gates the deterministic failure controls and manual recovery endpoint.
+The gateway is published on `127.0.0.1:8080`, Tempo's query API on `127.0.0.1:3200`, and Grafana on `127.0.0.1:3000`. Order, Inventory, Payment, PostgreSQL, the Collector receiver, and Investigation Service have no host-published ports. Compose enables the `local` Spring profile for this demo, which gates the deterministic failure controls and manual recovery endpoint. Open Grafana at `http://localhost:3000` and choose Explore → Tempo. Local default credentials are `admin` / `traceforge-local-only`; override them in an ignored `.env` file before use if needed.
 
 To run the dashboard in another terminal:
 
@@ -84,6 +86,47 @@ Use the optional `X-TraceForge-Failure` header on a create request to reproduce 
 
 All injected scenarios are rejected outside the explicit `local` profile. They do not accept or log sensitive payment data. The local profile is for development only.
 
+## Distributed traces
+
+Every service image includes the pinned OpenTelemetry Java agent. Incoming HTTP server spans, outgoing HTTP client spans, and the W3C `traceparent` context are created/propagated by the agent. Business spans add order outcomes, local failure codes, order IDs, and reservation/payment operation IDs. The Collector accepts OTLP/HTTP protobuf inside Compose and exports traces to Tempo over OTLP/gRPC. Tempo's local storage uses the persistent `traceforge-tempo-data` volume and retains completed blocks for 24 hours.
+
+The agent and custom spans do not capture payment details, request/response bodies, or HTTP headers. Custom exceptions record the exception type without the free-form message. Baggage propagation is disabled. Order IDs and operation IDs appear only as trace attributes, never as metric labels; metric and log exporters are disabled for this milestone. See [docs/security.md](docs/security.md) for the local-only exposure and retention assumptions.
+
+The pinned upstream Tempo and Collector binaries run in small Alpine wrappers so Compose can make real HTTP readiness checks; the upstream images do not include a shell or `wget`. Their ingestion and health endpoints remain private to the Compose network.
+
+Run the real trace check from PowerShell:
+
+```powershell
+.\scripts\verify-traces.ps1
+```
+
+It sends orders with unique, known `traceparent` values, calls the Tempo trace-by-ID API, and polls until traces contain the expected services/spans or a bounded timeout expires. It verifies a confirmed order, unknown-SKU rejection, payment decline plus inventory release, and a payment-service outage followed by a scheduled recovery span linked to the originating order span. It also temporarily stops the local Collector to check that a payment decline and inventory compensation retain their business result during telemetry loss; the script restores the Collector before it exits. It prints trace IDs that can be used in Grafana Explore. The controlled scenarios create local test data and consume inventory for successful/outage-recovered orders.
+
+Query a trace directly after the script prints its trace ID:
+
+```powershell
+$traceId = 'paste-32-hex-character-trace-id-here'
+Invoke-RestMethod "http://localhost:3200/api/v2/traces/$traceId"
+```
+
+The order service stores the originating trace/span IDs in private PostgreSQL columns for restart-safe recovery links; these fields are not part of the order API response. A scheduled recovery is a new trace with a span link, not a child of a completed HTTP span. Setting `TRACEFORGE_TRACING_ENABLED=false` in `.env` disables the Java agent while leaving the business services running. Traces remain queryable until Tempo's configured retention removes their blocks; `docker compose down -v` deletes the trace volume along with the database volume.
+
+If spans do not appear, check `docker compose ps`, then `docker compose logs otel-collector tempo`. The script polls Tempo for up to 45 seconds per immediate trace and uses a bounded wait for the recovery link; a healthy Collector alone is not proof that spans were stored.
+
+## Incident detection APIs
+
+The investigation service probes fixed service readiness endpoints and reads bounded Order recovery state. It does not query Tempo to decide incidents. `SERVICE_NOT_READY` opens after two consecutive failed or timed-out probes and resolves after two consecutive `UP` probes. `ORDER_RECOVERY_STALLED` covers overdue recovery and incomplete compensation; it resolves only after Order explicitly reports a terminal state with required compensation complete. Confirmed orders and fully compensated payment declines are ordinary outcomes, not incidents. Failed or stale sources do not resolve incidents; source freshness is exposed separately.
+
+The investigation service has no host-published port. Use the gateway's read-only routes:
+
+```powershell
+Invoke-RestMethod 'http://localhost:8080/api/v1/incidents?status=OPEN&limit=50'
+Invoke-RestMethod 'http://localhost:8080/api/v1/detection-status'
+Invoke-RestMethod 'http://localhost:8080/api/v1/incidents/{incident-id}'
+```
+
+Incident listing supports `OPEN` or `RESOLVED`, an optional opaque cursor, and a strict 1–100 item limit. The detection-status response includes the latest persisted cycle and per-source freshness. Reproduce the live synthetic scenarios with `scripts/verify-detection.ps1`; `scripts/test-backend.ps1` runs it after backend and Tempo checks. This script temporarily stops Order, Inventory, and the optional Collector for controlled checks, restores them in `finally`, and cleans its run-scoped business rows and order incidents. Resolved service-health incidents from the simulated outages remain as incident history.
+
 ## Consistency guarantees and limits
 
 Each service commits only to its own schema; there is no distributed transaction. The order row is durable before downstream calls. Inventory commits a stock decrement and reservation together; release restores that quantity and records `released_at` in one transaction and is idempotent by order ID. Payment commits an authorization/decline keyed by the order UUID. The saga uses persisted state transitions and compare-and-set updates, idempotency keys, bounded retries, and compensation.
@@ -96,6 +139,7 @@ A payment idempotency-key conflict is held at `INVENTORY_RESERVED` for manual re
 
 ```powershell
 .\scripts\test-backend.ps1
+.\scripts\test-investigation.ps1
 cd frontend
 npm test
 npm run build
@@ -103,14 +147,20 @@ cd ..
 docker compose config -q
 ```
 
-The backend script builds/starts the Compose stack, then runs Gateway, Inventory, Payment, and real-network Order integration suites in one-shot `maven:3.9.16-eclipse-temurin-21` containers. The Maven cache is stored in the `traceforge-maven-cache` Docker volume. Exact verified test counts and live checks are recorded in [TASKS.md](TASKS.md).
+The backend script builds/starts the full Compose stack, runs Gateway, Inventory, Payment, and real-network Order integration suites in one-shot `maven:3.9.16-eclipse-temurin-21` containers, checks saga recovery after service restarts, and runs Tempo trace assertions. The Maven cache is stored in the `traceforge-maven-cache` Docker volume. `OrderTracingTest` separately checks new-root recovery spans and origin links with an in-memory test exporter. Exact verified test counts and live trace IDs/results are recorded in [TASKS.md](TASKS.md); configured telemetry is not considered verified until the script reads matching spans from Tempo.
+
+`scripts/test-investigation.ps1` builds the pinned Python investigation image and runs its tests against a separate PostgreSQL service using tmpfs storage and an isolated Compose project; it does not use the persistent application schemas or volumes. It removes only that temporary test database container when finished.
+
+On 2026-10-10, Phase 3 local verification queried real Tempo traces for success, unknown SKU, payment decline/compensation, and payment outage/recovery, including the caller-supplied W3C trace context and a recovery link. The earlier Chrome Overview spot-check showed gateway health HTTP 200 and the honest empty incident state; one cancelled health request was not diagnosed, and this was not exhaustive browser workflow testing. Remote CI remains unverified because no Git remote is configured.
+
+On 2026-10-10, the Phase 4 backend integration passed locally: `scripts/test-investigation.ps1` passed **53 tests** against its disposable tmpfs database. The final `scripts/test-backend.ps1` run passed **37 Java tests** (Gateway 3, Inventory 8, Payment 4, Order 22), saga recovery/restart assertions, and live Tempo and incident-detection verifiers. It verified incident opening, deduplication, source failure non-resolution, explicit terminal compensation resolution, persistence across Investigation restart, two-probe health opening/resolution, and detection continuing while the Collector was stopped. All **9** Compose services were healthy afterward; `docker compose config -q` and `git diff --check` passed. Frontend tests/build were not rerun in this backend-only stage because no frontend files changed; the earlier Phase 3 frontend results remain documented. The `SKU-TEST-ORDER` warning remains unchanged. Exact commands and trace evidence are in [TASKS.md](TASKS.md).
 
 ## Stop and reset
 
 - Stop the dashboard with `Ctrl+C`.
 - Stop Compose with `docker compose down`; the database volume remains.
-- To intentionally erase stored orders, reservations, and payment attempts, use `docker compose down -v`.
+- To intentionally erase stored orders, reservations, payment attempts, and retained traces, use `docker compose down -v`.
 
 ## Roadmap and references
 
-See [docs/roadmap.md](docs/roadmap.md), [docs/architecture.md](docs/architecture.md), [docs/security.md](docs/security.md), and [docs/adr/0004-persisted-payment-saga.md](docs/adr/0004-persisted-payment-saga.md).
+See [docs/roadmap.md](docs/roadmap.md), [docs/architecture.md](docs/architecture.md), [docs/security.md](docs/security.md), [docs/adr/0004-persisted-payment-saga.md](docs/adr/0004-persisted-payment-saga.md), and [docs/adr/0005-distributed-tracing.md](docs/adr/0005-distributed-tracing.md).

@@ -28,16 +28,36 @@ class InventoryControllerTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    private String testOrderSku;
+    private String testTinySku;
+
     @BeforeEach
-    void resetIsolatedTestInventory() {
-        jdbcTemplate.update("UPDATE inventory_items SET available_quantity = 100 WHERE sku = ?", "SKU-TEST-ORDER");
-        jdbcTemplate.update("UPDATE inventory_items SET available_quantity = 1 WHERE sku = ?", "SKU-TEST-TINY");
+    void createIsolatedTestInventory() {
+        String suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        testOrderSku = "SKU-INV-" + suffix;
+        testTinySku = "SKU-TNY-" + suffix;
+        jdbcTemplate.update("INSERT INTO inventory_items (sku, available_quantity) VALUES (?, 100)", testOrderSku);
+        jdbcTemplate.update("INSERT INTO inventory_items (sku, available_quantity) VALUES (?, 1)", testTinySku);
     }
 
     @AfterEach
-    void restoreIsolatedTestInventory() {
-        jdbcTemplate.update("UPDATE inventory_items SET available_quantity = 100 WHERE sku = ?", "SKU-TEST-ORDER");
-        jdbcTemplate.update("UPDATE inventory_items SET available_quantity = 1 WHERE sku = ?", "SKU-TEST-TINY");
+    void removeIsolatedTestInventory() {
+        int orderStockWithReservations = stockPlusActiveReservations(testOrderSku);
+        int tinyStockWithReservations = stockPlusActiveReservations(testTinySku);
+        jdbcTemplate.update("DELETE FROM inventory_reservations WHERE sku IN (?, ?)", testOrderSku, testTinySku);
+        jdbcTemplate.update("DELETE FROM inventory_items WHERE sku IN (?, ?)", testOrderSku, testTinySku);
+        assertEquals(100, orderStockWithReservations, "test inventory stock must reconcile with active reservations");
+        assertEquals(1, tinyStockWithReservations, "test inventory stock must reconcile with active reservations");
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM inventory_reservations WHERE sku IN (?, ?)",
+                Integer.class,
+                testOrderSku,
+                testTinySku));
+        assertEquals(0, jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM inventory_items WHERE sku IN (?, ?)",
+                Integer.class,
+                testOrderSku,
+                testTinySku));
     }
 
     @Test
@@ -63,7 +83,7 @@ class InventoryControllerTest {
     @Test
     void reservationDecrementsStockAndIsIdempotentForAnOrderId() throws Exception {
         UUID orderId = UUID.randomUUID();
-        String body = "{\"orderId\":\"" + orderId + "\",\"sku\":\"SKU-TEST-ORDER\",\"quantity\":3}";
+        String body = "{\"orderId\":\"" + orderId + "\",\"sku\":\"" + testOrderSku + "\",\"quantity\":3}";
 
         mockMvc.perform(post("/internal/v1/inventory/reservations").contentType("application/json").content(body))
                 .andExpect(status().isOk())
@@ -74,26 +94,26 @@ class InventoryControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.availableQuantity").value(97));
 
-        mockMvc.perform(get("/internal/v1/inventory/SKU-TEST-ORDER"))
+        mockMvc.perform(get("/internal/v1/inventory/" + testOrderSku))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.availableQuantity").value(97));
     }
 
     @Test
     void rejectsInsufficientStockWithoutChangingQuantity() throws Exception {
-        String body = "{\"orderId\":\"" + UUID.randomUUID() + "\",\"sku\":\"SKU-TEST-TINY\",\"quantity\":2}";
+        String body = "{\"orderId\":\"" + UUID.randomUUID() + "\",\"sku\":\"" + testTinySku + "\",\"quantity\":2}";
 
         mockMvc.perform(post("/internal/v1/inventory/reservations").contentType("application/json").content(body))
                 .andExpect(status().isConflict());
 
-        mockMvc.perform(get("/internal/v1/inventory/SKU-TEST-TINY"))
+        mockMvc.perform(get("/internal/v1/inventory/" + testTinySku))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.availableQuantity").value(1));
     }
 
     @Test
     void controlledLocalFailureDoesNotReserveStock() throws Exception {
-        String body = "{\"orderId\":\"" + UUID.randomUUID() + "\",\"sku\":\"SKU-TEST-ORDER\",\"quantity\":3}";
+        String body = "{\"orderId\":\"" + UUID.randomUUID() + "\",\"sku\":\"" + testOrderSku + "\",\"quantity\":3}";
 
         mockMvc.perform(post("/internal/v1/inventory/reservations")
                         .header("X-TraceForge-Failure", "inventory-unavailable")
@@ -101,7 +121,7 @@ class InventoryControllerTest {
                         .content(body))
                 .andExpect(status().isServiceUnavailable());
 
-        mockMvc.perform(get("/internal/v1/inventory/SKU-TEST-ORDER"))
+        mockMvc.perform(get("/internal/v1/inventory/" + testOrderSku))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.availableQuantity").value(100));
     }
@@ -109,7 +129,7 @@ class InventoryControllerTest {
     @Test
     void releasesReservationExactlyOnce() throws Exception {
         UUID orderId = UUID.randomUUID();
-        String body = "{\"orderId\":\"" + orderId + "\",\"sku\":\"SKU-TEST-ORDER\",\"quantity\":4}";
+        String body = "{\"orderId\":\"" + orderId + "\",\"sku\":\"" + testOrderSku + "\",\"quantity\":4}";
         mockMvc.perform(post("/internal/v1/inventory/reservations")
                         .contentType("application/json").content(body))
                 .andExpect(status().isOk())
@@ -122,7 +142,7 @@ class InventoryControllerTest {
         mockMvc.perform(post("/internal/v1/inventory/reservations/{orderId}/release", orderId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.availableQuantity").value(100));
-        mockMvc.perform(get("/internal/v1/inventory/SKU-TEST-ORDER"))
+        mockMvc.perform(get("/internal/v1/inventory/" + testOrderSku))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.availableQuantity").value(100));
         assertEquals(1, jdbcTemplate.queryForObject(
@@ -133,7 +153,7 @@ class InventoryControllerTest {
     @Test
     void controlledCompensationFailureLeavesTheReservationHeld() throws Exception {
         UUID orderId = UUID.randomUUID();
-        String body = "{\"orderId\":\"" + orderId + "\",\"sku\":\"SKU-TEST-ORDER\",\"quantity\":4}";
+        String body = "{\"orderId\":\"" + orderId + "\",\"sku\":\"" + testOrderSku + "\",\"quantity\":4}";
         mockMvc.perform(post("/internal/v1/inventory/reservations")
                         .contentType("application/json").content(body))
                 .andExpect(status().isOk());
@@ -141,8 +161,18 @@ class InventoryControllerTest {
         mockMvc.perform(post("/internal/v1/inventory/reservations/{orderId}/release", orderId)
                         .header("X-TraceForge-Failure", "compensation-unavailable"))
                 .andExpect(status().isServiceUnavailable());
-        mockMvc.perform(get("/internal/v1/inventory/SKU-TEST-ORDER"))
+        mockMvc.perform(get("/internal/v1/inventory/" + testOrderSku))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.availableQuantity").value(96));
+    }
+
+    private int stockPlusActiveReservations(String sku) {
+        int available = jdbcTemplate.queryForObject(
+                "SELECT available_quantity FROM inventory_items WHERE sku = ?", Integer.class, sku);
+        int activeReservations = jdbcTemplate.queryForObject(
+                "SELECT COALESCE(SUM(quantity), 0) FROM inventory_reservations WHERE sku = ? AND released_at IS NULL",
+                Integer.class,
+                sku);
+        return available + activeReservations;
     }
 }
