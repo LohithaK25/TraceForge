@@ -9,3 +9,7 @@
 - Update documentation only to describe real implementation changes and checks actually run. Do not edit docs merely to make a milestone appear complete.
 - Keep scope bounded to the user's request. Ask before expanding into unrelated features, backend/API changes, infrastructure, or destructive runtime/database actions.
 - Keep the local demo evidence-first: do not fabricate incidents, traces, metrics, or success states. Treat missing/stale source data as unknown, not healthy.
+- Before stateful verification, inspect the verifier's cleanup logic and identify exactly which records or services it may change.
+- Never delete named Docker volumes or reset application data. Preserve the documented legacy SKU-TEST-ORDER records and warning.
+- Do not implement Phase 7 or Phase 8 as part of Phase 6 unless the original roadmap explicitly requires a small dependency; do not skip their planned functionality.
+- Preserve the remote-CI, production-authorization, and separate database-role-enforcement caveats until those checks are actually verified.

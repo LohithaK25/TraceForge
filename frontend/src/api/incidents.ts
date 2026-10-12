@@ -56,6 +56,15 @@ export type DetectionStatusResponse = {
   status: DetectionStatus;
   latestCycle: DetectionCycle | null;
   sources: SourceFreshness[];
+  services: ServiceHealthSnapshot[];
+};
+
+export type ServiceHealthSnapshot = {
+  serviceName: "api-gateway" | "order-service" | "inventory-service" | "payment-service";
+  status: "UP" | "DOWN" | "TIMEOUT" | "UNKNOWN";
+  observedAt: string | null;
+  freshnessStatus: FreshnessStatus;
+  incidentOpen: boolean;
 };
 
 export type IncidentPage = {
@@ -183,8 +192,27 @@ function isDetectionStatus(value: unknown): value is DetectionStatusResponse {
     DETECTION_STATUSES.includes(value.status as DetectionStatus) &&
     (value.latestCycle === null || isDetectionCycle(value.latestCycle)) &&
     Array.isArray(value.sources) &&
-    value.sources.every(isSourceFreshness)
+    value.sources.every(isSourceFreshness) &&
+    isServiceHealthSnapshots(value.services)
   );
+}
+
+function isServiceHealthSnapshots(value: unknown): value is ServiceHealthSnapshot[] {
+  return Array.isArray(value) &&
+    value.length === 4 &&
+    value.every(isServiceHealthSnapshot) &&
+    new Set(value.map((service) => service.serviceName)).size === 4;
+}
+
+function isServiceHealthSnapshot(value: unknown): value is ServiceHealthSnapshot {
+  return isRecord(value) &&
+    (value.serviceName === "api-gateway" || value.serviceName === "order-service" ||
+      value.serviceName === "inventory-service" || value.serviceName === "payment-service") &&
+    (value.status === "UP" || value.status === "DOWN" || value.status === "TIMEOUT" || value.status === "UNKNOWN") &&
+    isNullableTimestamp(value.observedAt) &&
+    typeof value.freshnessStatus === "string" &&
+    FRESHNESS_STATUSES.includes(value.freshnessStatus as FreshnessStatus) &&
+    typeof value.incidentOpen === "boolean";
 }
 
 function isDetectionCycle(value: unknown): value is DetectionCycle {

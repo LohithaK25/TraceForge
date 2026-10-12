@@ -1,6 +1,6 @@
 # TraceForge
 
-TraceForge is an evidence-first distributed incident investigation project. Its runnable sample application demonstrates a durable order → inventory reservation → payment authorization saga. The dashboard shows live gateway health, API-backed incidents, and detection-source freshness; it does not invent orders, payments, incidents, traces, metrics, or investigation results.
+TraceForge is an evidence-first distributed incident investigation project. Its runnable sample application demonstrates a durable order → inventory reservation → payment authorization saga. The dashboard shows gateway health, API-backed incidents, persisted service-health observations, detection-source freshness, and on-demand trace summaries; it does not invent orders, payments, incidents, traces, metrics, or investigation results.
 
 ## Current implementation
 
@@ -8,8 +8,8 @@ TraceForge is an evidence-first distributed incident investigation project. Its 
 - Orders, reservations, and payment attempts use separate PostgreSQL schemas and Flyway migrations on the persistent `traceforge-postgres-data` volume.
 - Order creation uses a required client idempotency key. Inventory reservation, inventory release, and payment authorization are each idempotent at their service boundary.
 - A persisted recovery worker resumes uncertain operations and compensation. See [docs/architecture.md](docs/architecture.md) for the state machine and consistency limits.
-- All four Java services use the same pinned OpenTelemetry Java agent. The local Collector exports traces to Tempo, which Grafana Explore can query. The dashboard displays trace references only when the API supplies them; it does not fabricate trace data.
-- The Python/FastAPI investigation service runs scheduled deterministic health and recovery detection, persists incidents and source freshness in the `incident_service` schema, and exposes bounded read APIs through the gateway. The dashboard lists open incidents, resolved history, selected incident details, and source freshness from those APIs.
+- All four Java services use the same pinned OpenTelemetry Java agent. The local Collector exports traces to Tempo, which Grafana Explore can query. The Gateway returns a bounded, sanitized trace summary only when the user explicitly loads an API-supplied trace reference.
+- The Python/FastAPI investigation service runs scheduled deterministic health and recovery detection, persists incidents, service probe state, and source freshness in the `incident_service` schema, and exposes bounded read APIs through the gateway. The dashboard lists incidents and resolved history, separates last service probe results from freshness, and loads real trace summaries on demand.
 - The payment provider is a deterministic local simulator. No real payment rail, card number, or other payment credential is accepted or processed.
 
 ## Prerequisites
@@ -27,6 +27,8 @@ From the repository root:
 ```powershell
 docker compose up --build -d --wait
 ```
+
+On this Windows development host, the configured `default` Docker context (`npipe:////./pipe/docker_engine`) returned permission denied while the `desktop-linux` context was available. To use the working Docker Desktop endpoint for the current PowerShell session without changing persistent context settings, run `$env:DOCKER_CONTEXT = 'desktop-linux'` before Compose commands, or use `docker --context desktop-linux ...` for individual commands.
 
 The gateway is published on `127.0.0.1:8080`, Tempo's query API on `127.0.0.1:3200`, and Grafana on `127.0.0.1:3000`. Order, Inventory, Payment, PostgreSQL, the Collector receiver, and Investigation Service have no host-published ports. Compose enables the `local` Spring profile for this demo, which gates the deterministic failure controls and manual recovery endpoint. Open Grafana at `http://localhost:3000` and choose Explore → Tempo. Local default credentials are `admin` / `traceforge-local-only`; override them in an ignored `.env` file before use if needed.
 
@@ -128,6 +130,14 @@ Invoke-RestMethod 'http://localhost:8080/api/v1/incidents/{incident-id}'
 Incident listing supports `OPEN` or `RESOLVED`, an optional opaque cursor, and a strict 1–100 item limit. The detection-status response includes the latest persisted cycle and per-source freshness. Reproduce the live synthetic scenarios with `scripts/verify-detection.ps1`; `scripts/test-backend.ps1` runs it after backend and Tempo checks. This script temporarily stops Order, Inventory, and the optional Collector for controlled checks, restores them in `finally`, and cleans its run-scoped business rows and order incidents. Resolved service-health incidents from the simulated outages remain as incident history.
 
 The dashboard consumes these read-only contracts through the gateway. Its incident list is paginated with an opaque cursor, resolved history is available through the status filter, and each selected incident can load bounded evidence details. Detection freshness is independent of incident state; unavailable, stale, partial, or not-yet-run sources are described as unconfirmed rather than healthy.
+
+## Service health and trace evidence
+
+The dashboard shows the last persisted readiness result for the API Gateway, Order, Inventory, and Payment services from `GET /api/v1/detection-status`. Each service row includes `UP`, `DOWN`, `TIMEOUT`, or `UNKNOWN`, the observation time, collection freshness, and whether a service-not-ready incident is open. These are the latest collected observations, not synchronous probes initiated by the browser. Missing observations are `UNKNOWN`/`UNAVAILABLE`; a stale last `UP` result is not represented as current health.
+
+For incident trace references, select **Load trace** to call `GET /api/v1/traces/{traceId}` on the Gateway. The Gateway queries Tempo's fixed trace-by-ID endpoint and returns only a summary of at most 250 spans from a response capped at 1 MiB. The summary contains service and span identifiers, operation names, times, span status, and allowlisted HTTP method, route, and status code. Raw Tempo attributes and events are not exposed. A missing trace (404) and an unavailable Tempo backend (503) are shown as unavailable evidence, not as an empty or resolved incident. The frontend never queries Tempo directly.
+
+These APIs and views are read-only local-demo functionality. Phase 5 backend tests and local runtime checks passed on 2026-10-12: 54 Investigation tests, 8 Gateway tests, live detection/recovery checks, and bounded trace queries through the rebuilt Gateway. Four supplied desktop screenshots manually document the per-service health/probe freshness, separate detection-source freshness, honest empty-open state, real resolved history and detail evidence, and trace-evidence view when no trace references are available. This records those visible desktop workflows only; it does not verify every interaction or network request, mobile layout, or exhaustive browser behavior. An earlier browser-automation attempt was blocked by the local URL policy. Remote CI, production authorization, and separate database-role enforcement remain unverified. See [TASKS.md](TASKS.md) and [ADR 0007](docs/adr/0007-service-health-and-trace-views.md).
 
 ## Consistency guarantees and limits
 

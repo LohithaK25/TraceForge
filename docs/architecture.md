@@ -6,7 +6,7 @@ The current sample is a synchronous, persisted saga across separate Spring Boot 
 
 ```mermaid
 flowchart LR
-  Browser[React incident dashboard] -->|health, incidents, freshness| Gateway[API Gateway]
+  Browser[React incident dashboard] -->|health, incidents, service observations, traces| Gateway[API Gateway]
   Gateway -->|create/read/recover| Order[Order Service]
   Order -->|reserve/release| Inventory[Inventory Service]
   Order -->|authorize| Payment[Payment Service]
@@ -17,6 +17,7 @@ flowchart LR
   Gateway --> Actuator[Actuator readiness]
   Gateway --> Investigation[Investigation Service]
   Investigation --> IncidentDB[(incident_service)]
+  Gateway -. bounded trace read .-> Tempo[Tempo]
   Gateway -. OTLP HTTP .-> Collector[OpenTelemetry Collector]
   Order -. OTLP HTTP .-> Collector
   Inventory -. OTLP HTTP .-> Collector
@@ -142,6 +143,14 @@ The Investigation Service exposes `/healthz` and database-backed `/readyz` inter
 Tempo is not queried by the detector; trace IDs are optional evidence references and are not a detection prerequisite. On 2026-10-10, the isolated Investigation suite passed 53 tests, all four Java services passed 37 tests with the pinned JDK 21/Maven toolchain, and live detection tests verified incident opening/deduplication/resolution, failed-source non-resolution, persisted incident/freshness after Investigation restart, bounded APIs, and continued cycles with Collector stopped. Exact output, trace IDs, and remaining environmental caveats are in [TASKS.md](../TASKS.md).
 
 The reproducible isolated suite is `scripts/test-investigation.ps1`: it runs against a dedicated `incident-test-postgres` container with a tmpfs database and a separate Compose project. The script's fixture checks database identity before applying migrations or deleting test rows. See [TASKS.md](../TASKS.md) for the recorded results and [security.md](security.md) for exposure limitations.
+
+### Phase 5: service health and trace evidence views
+
+The existing `GET /api/v1/detection-status` response now includes a bounded `services` array for `api-gateway`, `order-service`, `inventory-service`, and `payment-service`. Each entry reports the last persisted readiness probe (`UP`, `DOWN`, `TIMEOUT`, or `UNKNOWN`), its observation time, the corresponding collection freshness (`CURRENT`, `PARTIAL`, `STALE`, or `UNAVAILABLE`), and whether a `SERVICE_NOT_READY` incident is open. An absent observation is represented as `UNKNOWN`, no timestamp, and `UNAVAILABLE` freshness. The UI keeps probe result, freshness, and incident state distinct; stale observations are not shown as current health.
+
+The dashboard can request `GET /api/v1/traces/{traceId}` through the Gateway when a user opens a trace reference on incident detail. The Gateway validates a lowercase 32-character trace ID and queries only Tempo's fixed `/api/v2/traces/{traceId}` route. It returns a sanitized summary of at most 250 spans from a response capped at 1 MiB with bounded connection/read timeouts. The response includes service, span and parent IDs, operation name, timestamps, span status, and allowlisted HTTP method/route/status fields; raw Tempo attributes, events, bodies, exception messages, and payment data are not forwarded. Tempo not found is distinct from Tempo unavailability, and neither is evidence that an incident resolved. The frontend does not contact Tempo directly.
+
+These endpoints are read-only local-demo APIs. On 2026-10-12 the Investigation suite passed 54 tests and the pinned Gateway suite passed 8 tests. The rebuilt Gateway returned a real four-span trace across Gateway and Inventory, rejected malformed IDs (400), returned 404 for a missing trace, and returned 503 while Tempo was stopped; Tempo was restored healthy afterward. Detection continued while the optional Collector was stopped. Four supplied desktop screenshots document the visible probe/freshness panels, honest empty-open state, real resolved history and incident detail, and trace-evidence section with no returned trace references. This confirms only those screenshot-visible desktop states; mobile and exhaustive browser interaction/network behavior remain unverified. Remote CI, production authorization, and separate database-role enforcement are also unverified. See [ADR 0007](adr/0007-service-health-and-trace-views.md) and [TASKS.md](../TASKS.md).
 
 ## Local fault controls
 

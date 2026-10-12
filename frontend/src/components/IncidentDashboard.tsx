@@ -10,6 +10,8 @@ import {
   type IncidentRecord,
   type SourceFreshness,
 } from "../api/incidents";
+import { ServiceHealthPanel } from "./ServiceHealthPanel";
+import { TraceEvidence } from "./TraceEvidence";
 
 type RequestState = "loading" | "ready" | "error";
 
@@ -140,6 +142,8 @@ export function IncidentDashboard() {
           Refresh data
         </button>
       </div>
+
+      <ServiceHealthPanel state={freshnessState} data={detectionStatus} error={freshnessError} />
 
       <DetectionFreshness
         state={freshnessState}
@@ -332,6 +336,9 @@ function IncidentDetail({
   error?: string;
   onClose: () => void;
 }) {
+  const traceIds = incident
+    ? [...new Set([incident.originTraceId, ...incident.evidence.map((evidence) => evidence.traceId)].filter((id): id is string => id !== null))]
+    : [];
   return (
     <section className="detail-panel" aria-label="Selected incident details" aria-live="polite">
       <div className="detail-heading">
@@ -365,6 +372,14 @@ function IncidentDetail({
                 </li>
               ))}
             </ul>
+          )}
+          <h4>Trace evidence from Tempo</h4>
+          {traceIds.length === 0 ? (
+            <p className="detail-empty">No trace references were returned for this incident.</p>
+          ) : (
+            <div className="trace-evidence-list">
+              {traceIds.map((traceId) => <TraceEvidence key={traceId} traceId={traceId} />)}
+            </div>
           )}
         </>
       )}

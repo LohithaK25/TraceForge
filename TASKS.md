@@ -1,5 +1,32 @@
 # TraceForge task log
 
+## Phase 5 dashboard: service health and trace evidence — 2026-10-12
+
+### Implementation
+
+- Extended `GET /api/v1/detection-status` with persisted probe snapshots for the four fixed services. Each reports `UP`/`DOWN`/`TIMEOUT`/`UNKNOWN`, observation time, source freshness, and whether a service-health incident is open. Missing observations remain `UNKNOWN` + `UNAVAILABLE`.
+- Added `GET /api/v1/traces/{traceId}` through the Gateway. It validates lowercase 32-hex IDs, uses bounded timeouts, caps Tempo input at 1 MiB and output at 250 spans, and returns only allowlisted span fields. Raw Tempo attributes/events and request, exception, or payment content are not forwarded.
+- Added dashboard service-health and on-demand trace-summary views. Added ADR 0007 and updated architecture/security/roadmap/README/handoff documentation. No schema migration or business-table change was needed.
+
+### Verification completed
+
+- Docker diagnosis: `docker context show` returned `default`; `docker info` and `docker compose ps -a` failed because `default` targets `npipe:////./pipe/docker_engine`, which denied access. `docker context ls` showed `desktop-linux` at `npipe:////./pipe/dockerDesktopLinuxEngine`; `docker --context desktop-linux info` succeeded. Commands were run with the per-process `$env:DOCKER_CONTEXT = 'desktop-linux'`; no global context setting was changed.
+- $env:DOCKER_CONTEXT = 'desktop-linux'; `.\scripts\test-investigation.ps1` — first run: 53 passed, 1 failed because a test reused a monkeypatched frozen clock. The test now calls the saved original repository method for its advanced-time assertion, preserving the stale assertion. Final rerun: **54 passed** against the isolated tmpfs PostgreSQL test database; its disposable container was removed.
+- Pinned Gateway tests ran `docker run --rm --network traceforge-network --mount "type=bind,source=E:/Projects/services/api-gateway,target=/workspace" --mount "type=volume,source=traceforge-maven-cache,target=/root/.m2" --workdir /workspace maven:3.9.16-eclipse-temurin-21 mvn -B test`. The first compile found a missing `IOException` import; after fixing it, Spring context setup found the production `TempoClient` constructor was ambiguous with its test constructor. Marked the production constructor `@Autowired`; final result **8 tests passed, 0 failures/errors/skips**.
+- `$env:DOCKER_CONTEXT = 'desktop-linux'; docker compose config -q` — passed. Then `docker compose build api-gateway investigation-service` and `docker compose up -d --no-deps --force-recreate --wait --wait-timeout 120 api-gateway investigation-service` built/recreated only the changed services; running container image IDs matched their new tags. `docker compose ps` showed all 9 services healthy.
+- `.\scripts\verify-detection.ps1` with `$env:DOCKER_CONTEXT = 'desktop-linux'` — **passed, exit 0**. It confirmed success and fully compensated decline create no incidents; stalled compensation opens one episode; failed/stale sources do not resolve; explicit terminal Order state plus completed compensation resolves; probe incidents open after failures and resolve after healthy probes; persisted freshness survives Investigation restart; and detection completes with Collector stopped. Its `finally` restored Order, Inventory, Collector, and Investigation and removed scoped generated business rows/order incidents. The verifier intentionally leaves resolved service-health incident history from its controlled outages.
+- Live rebuilt API checks: detection status returned 4 services, all `UP`/`CURRENT`, with no open service incidents. A read-only Inventory GET with caller trace ID `f6b51cb4545d465ab730f6e1681efdc9` was later queried through the Gateway and returned **4 spans** across `api-gateway` and `inventory-service`; response size was 1,268 bytes and only allowed fields were present. The bounded polling initially found a partial trace and then the full trace on the next query. After the detection verifier, the resolved history page returned 23 items and one had a real trace reference.
+- Trace route cases: valid trace **200**; malformed ID **400**; nonexistent trace **404**; with Tempo stopped, valid ID **503**. Tempo was restored and `/ready` returned **200**. The live detection verifier completed cycles while Collector was stopped; Tempo is not a detector input by design.
+- Final read-only check after recovery: all **9** Compose containers were `running` and `healthy`; `GET /api/v1/detection-status` returned `CURRENT` with 4 services and 5 sources, all service probes `UP`/`CURRENT`; open incident count was 0. The synthetic detection run left resolved `SERVICE_NOT_READY` history from the actual temporary service stops. No named volume was removed, no `SKU-TEST-ORDER` data was read-modified or reconciled, and no files were staged/committed/pushed.
+- Frontend `npm test` (**2 files / 11 tests**) and `npm run build` had passed during the preceding Phase 5 implementation session; they were not rerun here because no frontend source changed. `git diff --check` passed after the final documentation update.
+
+### Remaining acceptance and next action
+
+- Four supplied desktop screenshots manually document the per-service health indicators and probe freshness; separate detection-source freshness; the honest empty-open-incidents wording that an empty result does not establish every source is healthy; real resolved `SERVICE_NOT_READY` history; a resolved detail with real `HEALTH_PROBE` / `CONNECT_FAILED` evidence; and the trace-evidence section when no trace references are returned. This verifies those visible desktop workflows only. It does not verify every interaction, browser network request, mobile layout, or exhaustive browser behavior. An earlier browser-automation attempt was blocked by the local URL security policy; the screenshots are the available visual evidence.
+- The full `scripts/test-backend.ps1` was not rerun: the changed backend components received their isolated/full module suites and live detection verifier; the script would rebuild the full stack and run unrelated service/saga/trace restart suites. Remote CI, production authorization, and database-role enforcement remain unverified.
+- Preserve the existing legacy warning: `SKU-TEST-ORDER` has 94 available units but 113 reservation rows representing 139 unreleased units. Do not reconcile it. Phase 5 is implemented and locally verified for its documented scope; remote CI, production authorization, and separate database-role enforcement remain unverified. Phase 6 evidence-backed investigation is next; do not implement Phase 7 or 8 in that work unless the roadmap explicitly requires a small dependency.
+- This documentation-only closeout recorded the supplied screenshot evidence and prepared the Phase 6 prompt. Tests, builds, browser checks, Compose, and integration verification were not rerun; `git diff --check` was run after the documentation edits and passed.
+
 ## Phase 4 frontend incident dashboard — 2026-10-12
 
 ### Implementation
@@ -261,6 +288,6 @@ Implemented a separate Payment Service with its own Flyway-managed schema and de
 - At the 2026-10-10 Phase 3 closeout, no Git remote was configured and remote CI was not run. An `origin` remote is configured in the current checkout, but no remote run is verified for the frontend dashboard.
 - The legacy `SKU-TEST-ORDER` inconsistency documented above remains untouched.
 
-## Next milestone
+## Current next milestone
 
-The Phase 4 frontend incident dashboard is implemented and its desktop browser closeout is verified. Do not start another phase until the user provides its scope. Remote CI and production authorization/database-role checks remain separate outstanding items.
+Phase 6 evidence-backed investigation is next in the roadmap. The supplied four desktop screenshots document the visible Phase 5 dashboard workflows; mobile layout, exhaustive browser interactions/network behavior, and remote CI remain unverified. Keep production authorization and separate database-role enforcement outstanding. See `NEXT_PROMPT.md` for a self-contained continuation prompt.

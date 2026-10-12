@@ -43,6 +43,15 @@ function sourceStatus(overrides: Partial<DetectionStatusResponse> = {}): Detecti
         errorCode: null,
       },
     ],
+    services: [
+      "api-gateway", "order-service", "inventory-service", "payment-service",
+    ].map((serviceName) => ({
+      serviceName: serviceName as "api-gateway" | "order-service" | "inventory-service" | "payment-service",
+      status: "UP" as const,
+      observedAt: secondSeenAt,
+      freshnessStatus: "CURRENT" as const,
+      incidentOpen: false,
+    })),
     ...overrides,
   };
 }
@@ -101,6 +110,8 @@ function installApi(
     resolvedPage?: IncidentPage;
     freshness?: DetectionStatusResponse;
     detail?: IncidentRecord;
+    trace?: unknown;
+    traceStatus?: number;
     listStatus?: number;
   } = {},
 ) {
@@ -110,6 +121,7 @@ function installApi(
     requests.push(path);
     if (path === "/api/v1/detection-status") return jsonResponse(options.freshness ?? sourceStatus());
     if (path === `/api/v1/incidents/${incidentId}`) return jsonResponse(options.detail ?? incident());
+    if (path === `/api/v1/traces/${"b".repeat(32)}`) return jsonResponse(options.trace ?? {}, options.traceStatus ?? 200);
     if (path.includes("status=RESOLVED")) return jsonResponse(options.resolvedPage ?? page());
     if (options.listStatus && options.listStatus !== 200) return jsonResponse({}, options.listStatus);
     return jsonResponse(options.openPage ?? page());
@@ -125,6 +137,8 @@ describe("incident dashboard", () => {
 
     expect(await screen.findByText("Order compensation is still required")).toBeInTheDocument();
     expect(screen.getByText("Detection-source freshness")).toBeInTheDocument();
+    expect(screen.getByText("Service health")).toBeInTheDocument();
+    expect(screen.getAllByText("api-gateway")).toHaveLength(2);
     expect(screen.getByText("order-attention")).toBeInTheDocument();
     expect(screen.getByText("The latest detection cycle and its sources are within the reported freshness window.")).toBeInTheDocument();
 
@@ -135,8 +149,12 @@ describe("incident dashboard", () => {
   });
 
   it("shows an empty result separately from stale and unavailable sources", async () => {
+    const services = sourceStatus().services.map((service) => service.serviceName === "payment-service"
+      ? { ...service, status: "DOWN" as const, freshnessStatus: "STALE" as const }
+      : service);
     const stale = sourceStatus({
       status: "STALE",
+      services,
       sources: [
         {
           source: "payment-service",
@@ -155,6 +173,7 @@ describe("incident dashboard", () => {
     expect(screen.getByText("The last successful observations are stale; current service health is not confirmed.")).toBeInTheDocument();
     expect(screen.getByText("UNAVAILABLE")).toBeInTheDocument();
     expect(screen.getByText("UPSTREAM_UNAVAILABLE")).toBeInTheDocument();
+    expect(screen.getByText("Current readiness is not confirmed.")).toBeInTheDocument();
   });
 
   it("loads resolved history through the supported status filter", async () => {
@@ -242,5 +261,47 @@ describe("incident dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "View details" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("This incident is no longer available.");
     expect(screen.getByText("Order compensation is still required")).toBeInTheDocument();
+  });
+
+  it("loads a trace only on request and renders the bounded span summary", async () => {
+    const traceId = "b".repeat(32);
+    const detail = incident({ originTraceId: traceId });
+    const { requests } = installApi({
+      openPage: page([detail]),
+      detail,
+      trace: {
+        traceId,
+        truncated: false,
+        spans: [
+          {
+            service: "api-gateway", spanId: "0123456789abcdef", parentSpanId: null,
+            name: "GET /api/v1/orders/{id}", startTime: firstSeenAt, endTime: secondSeenAt,
+            status: "OK", httpMethod: "GET", httpRoute: "/api/v1/orders/{id}", httpStatusCode: 200,
+          },
+        ],
+      },
+    });
+    render(<IncidentDashboard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View details" }));
+    expect(await screen.findByText("Trace evidence from Tempo")).toBeInTheDocument();
+    expect(requests.some((path) => path.startsWith("/api/v1/traces/"))).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Load trace" }));
+
+    expect(await screen.findByText("GET /api/v1/orders/{id}")).toBeInTheDocument();
+    expect(screen.getByText("1 spans from api-gateway")).toBeInTheDocument();
+    expect(requests).toContain(`/api/v1/traces/${traceId}`);
+  });
+
+  it("shows unavailable Tempo evidence without treating it as an empty trace", async () => {
+    const traceId = "b".repeat(32);
+    const detail = incident({ originTraceId: traceId });
+    installApi({ openPage: page([detail]), detail, traceStatus: 503 });
+    render(<IncidentDashboard />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Load trace" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Tempo trace storage is unavailable; trace evidence could not be confirmed.");
   });
 });

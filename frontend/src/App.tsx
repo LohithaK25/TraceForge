@@ -54,7 +54,7 @@ export default function App() {
             <div>
               <p className="eyebrow">INCIDENT RESPONSE</p>
               <h1 id="page-title">Overview</h1>
-              <p className="subtitle">Live incident findings and detection-source freshness from the TraceForge APIs.</p>
+              <p className="subtitle">API-backed incidents, persisted service observations, and collection freshness.</p>
             </div>
             <div className="date-chip"><span className="calendar-icon" aria-hidden="true">▦</span> API data</div>
           </section>

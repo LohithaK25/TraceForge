@@ -7,6 +7,13 @@ const detectionStatus = {
   status: "NOT_RUN",
   latestCycle: null,
   sources: [],
+  services: ["api-gateway", "order-service", "inventory-service", "payment-service"].map((serviceName) => ({
+    serviceName,
+    status: "UNKNOWN",
+    observedAt: null,
+    freshnessStatus: "UNAVAILABLE",
+    incidentOpen: false,
+  })),
 };
 
 const incidentPage = {

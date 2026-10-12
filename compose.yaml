@@ -175,6 +175,7 @@ services:
       INVENTORY_SERVICE_URL: http://inventory-service:8081
       ORDER_SERVICE_URL: http://order-service:8082
       INVESTIGATION_SERVICE_URL: http://investigation-service:8090
+      TEMPO_BASE_URL: http://tempo:3200
       OTEL_SERVICE_NAME: api-gateway
       OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=local
       OTEL_JAVAAGENT_ENABLED: ${TRACEFORGE_TRACING_ENABLED:-true}

@@ -19,6 +19,8 @@ from .models import (
     HealthEvaluation,
     HealthObservation,
     HealthRuleState,
+    ProbeStatus,
+    ServiceHealthSnapshot,
     IncidentRecord,
     DetectionCycleRecord,
     DetectionStatusResponse,
@@ -35,6 +37,7 @@ from .rules import HealthRulePolicy, OrderRecoveryPolicy, evaluate_health_observ
 
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _SCHEMA_LOCK_ID = 7_341_027_184
+_HEALTH_SERVICES = ("api-gateway", "order-service", "inventory-service", "payment-service")
 
 
 class IncidentRepository:
@@ -203,6 +206,10 @@ class IncidentRepository:
                 "SELECT source, status, attempted_at, last_success_at, item_count, error_code "
                 "FROM incident_service.detection_source_state ORDER BY source"
             ).fetchall()
+            health_rows = connection.execute(
+                "SELECT service_name, last_status, last_observed_at, incident_open "
+                "FROM incident_service.health_rule_state ORDER BY service_name"
+            ).fetchall()
         sources = []
         for row in source_rows:
             source = SourceFreshness.model_validate(row)
@@ -229,7 +236,23 @@ class IncidentRepository:
                 status = "STALE" if any(source.status == FreshnessStatus.STALE for source in sources) else "PARTIAL"
             else:
                 status = "CURRENT"
-        return DetectionStatusResponse(status=status, latestCycle=latest, sources=sources)
+        source_status = {source.source: source.status for source in sources}
+        health_by_service = {row["service_name"]: row for row in health_rows}
+        services = [
+            ServiceHealthSnapshot(
+                serviceName=service_name,
+                status=(
+                    ProbeStatus(health_by_service[service_name]["last_status"])
+                    if service_name in health_by_service and health_by_service[service_name]["last_status"]
+                    else ProbeStatus.UNKNOWN
+                ),
+                observedAt=(health_by_service[service_name]["last_observed_at"] if service_name in health_by_service else None),
+                freshnessStatus=source_status.get(service_name, FreshnessStatus.UNAVAILABLE),
+                incidentOpen=(health_by_service[service_name]["incident_open"] if service_name in health_by_service else False),
+            )
+            for service_name in _HEALTH_SERVICES
+        ]
+        return DetectionStatusResponse(status=status, latestCycle=latest, sources=sources, services=services)
 
     def apply_health_observation(
         self,
