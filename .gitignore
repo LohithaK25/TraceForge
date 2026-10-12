@@ -32,3 +32,7 @@ data/
 .vscode/
 .DS_Store
 Thumbs.db
+
+/CODEX_GUIDE.md
+/HANDOFF.md
+/NEXT_PROMPT.md
