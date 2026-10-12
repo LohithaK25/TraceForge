@@ -15,6 +15,9 @@ from fastapi import FastAPI, HTTPException, Query, status
 from .clients import HealthProbeClient, OrderAttentionClient
 from .config import Settings
 from .engine import InvestigationEngine
+from .investigation_clients import TraceSummaryClient
+from .investigation_models import InvestigationResult
+from .investigator import IncidentInvestigator
 from .models import DetectionStatusResponse, IncidentPage, IncidentRecord
 from .repository import IncidentRepository
 from .scheduler import detection_loop
@@ -31,6 +34,12 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         repository,
         HealthProbeClient(effective_settings),
         OrderAttentionClient(effective_settings),
+    )
+    investigator = IncidentInvestigator(
+        effective_settings,
+        repository,
+        OrderAttentionClient(effective_settings),
+        TraceSummaryClient(effective_settings),
     )
     scheduler_stop = asyncio.Event()
     scheduler_task: asyncio.Task[None] | None = None
@@ -55,6 +64,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
             if scheduler_task is not None:
                 await scheduler_task
             engine.close()
+            investigator.close()
 
     app = FastAPI(
         title="TraceForge Investigation Service",
@@ -65,6 +75,7 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
     )
     app.state.engine = engine
     app.state.repository = repository
+    app.state.investigator = investigator
 
     @app.get("/healthz", include_in_schema=False)
     def liveness() -> dict[str, str]:
@@ -113,6 +124,36 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         if incident is None:
             raise HTTPException(status_code=404, detail={"code": "INCIDENT_NOT_FOUND"})
         return incident
+
+    @app.get(
+        "/api/v1/incidents/{incident_id}/investigations/latest",
+        response_model=InvestigationResult,
+    )
+    def get_latest_investigation(incident_id: UUID) -> InvestigationResult:
+        try:
+            if repository.find_by_id(incident_id) is None:
+                raise HTTPException(status_code=404, detail={"code": "INCIDENT_NOT_FOUND"})
+            result = repository.get_investigation(incident_id)
+        except psycopg.Error:
+            logger.warning("investigation_read_database_unavailable")
+            raise HTTPException(status_code=503, detail={"code": "DETECTION_STORE_UNAVAILABLE"}) from None
+        if result is None:
+            raise HTTPException(status_code=404, detail={"code": "INVESTIGATION_NOT_FOUND"})
+        return result
+
+    @app.post(
+        "/api/v1/incidents/{incident_id}/investigations",
+        response_model=InvestigationResult,
+    )
+    def run_investigation(incident_id: UUID) -> InvestigationResult:
+        try:
+            result = investigator.run(incident_id)
+        except psycopg.Error:
+            logger.warning("investigation_run_database_unavailable")
+            raise HTTPException(status_code=503, detail={"code": "DETECTION_STORE_UNAVAILABLE"}) from None
+        if result is None:
+            raise HTTPException(status_code=404, detail={"code": "INCIDENT_NOT_FOUND"})
+        return result
 
     @app.get("/api/v1/detection-status", response_model=DetectionStatusResponse)
     def detection_status() -> DetectionStatusResponse:

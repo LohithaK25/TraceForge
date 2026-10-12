@@ -60,9 +60,9 @@ def test_migration_creates_only_owned_schema_and_expected_indexes(incident_repos
             ).fetchall()
         }
     assert schema is not None
-    assert {"schema_migrations", "incidents", "health_rule_state", "detection_cycles", "detection_source_state"} <= tables
+    assert {"schema_migrations", "incidents", "health_rule_state", "detection_cycles", "detection_source_state", "investigations"} <= tables
     assert "incidents_one_open_fingerprint_uq" in indexes
-    assert incident_repository.applied_migrations() == ["0001", "0002"]
+    assert incident_repository.applied_migrations() == ["0001", "0002", "0003"]
 
 
 def test_open_incident_persists_safe_evidence_and_optional_trace_id(incident_repository):

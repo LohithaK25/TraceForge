@@ -105,7 +105,7 @@ h1 { margin-bottom: 7px; font-size: 27px; font-weight: 600; letter-spacing: -.9p
 .status-badge--current, .status-badge--open, .status-badge--complete { border-color: #355a50; color: #a8ddce; background: #1b302c; }
 .status-badge--high { border-color: #67563b; color: #ead19a; background: #332c20; }
 .status-badge--critical, .status-badge--stale, .status-badge--unavailable, .status-badge--failed, .status-badge--down, .status-badge--timeout, .status-badge--error { border-color: #68463e; color: #efb0a2; background: #352421; }
-.status-badge--partial, .status-badge--not-run, .status-badge--resolved, .status-badge--running { border-color: #645737; color: #e4ce91; background: #302b1d; }
+.status-badge--partial, .status-badge--insufficient, .status-badge--not-run, .status-badge--resolved, .status-badge--running { border-color: #645737; color: #e4ce91; background: #302b1d; }
 .incident-list-section { padding: 19px 20px 20px; }
 .incident-controls { display: flex; flex-wrap: wrap; gap: 7px; }
 .filter-button { padding: 7px 10px; color: #9eacab; font-size: 10px; }
@@ -156,6 +156,30 @@ h1 { margin-bottom: 7px; font-size: 27px; font-weight: 600; letter-spacing: -.9p
 .trace-span-name { color: #b8dcd2; font: 10px Consolas, monospace; overflow-wrap: anywhere; }
 .trace-span-meta, .trace-span-row time { color: var(--muted); font-size: 9px; overflow-wrap: anywhere; }
 
+.investigation-panel { min-width: 0; margin-top: 22px; padding: 18px; border: 1px solid #2e403f; border-radius: 8px; background: #151f21; }
+.investigation-panel__heading, .investigation-report__status { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.investigation-panel__heading h4 { margin: 6px 0 0; font-size: 14px; }
+.investigation-report__status { justify-content: flex-start; flex-wrap: wrap; margin-top: 13px; color: var(--muted); font: 10px Consolas, monospace; }
+.investigation-report__status time { overflow-wrap: anywhere; }
+.investigation-uncertainty { margin: 10px 0 0; padding: 9px 10px; border-left: 2px solid #9a8149; background: #242319; color: #e2d2a2; font-size: 10px; line-height: 1.55; overflow-wrap: anywhere; }
+.investigation-subsection { min-width: 0; margin-top: 18px; }
+.investigation-subsection h5 { margin: 0 0 8px; color: #c8d4d2; font-size: 11px; }
+.investigation-claim-list, .investigation-gap-list, .investigation-evidence-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.investigation-claim-list li, .investigation-gap-list li, .investigation-evidence-list li { min-width: 0; padding: 10px; border: 1px solid #263638; border-radius: 6px; background: #172123; }
+.investigation-claim-list p, .investigation-gap-list p, .investigation-evidence-list p { margin: 0; color: #b9c6c4; font-size: 11px; line-height: 1.55; overflow-wrap: anywhere; }
+.claim-citations { display: block; margin-top: 7px; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.claim-citations a { color: #91cbbd; text-decoration: underline; text-underline-offset: 2px; }
+.claim-citations a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.investigation-gap-list strong, .investigation-gap-list span, .investigation-evidence-list small { display: block; overflow-wrap: anywhere; }
+.investigation-gap-list strong, .investigation-evidence-list strong { color: #d2ddda; font-size: 10px; }
+.investigation-gap-list span, .investigation-evidence-list small { margin-top: 4px; color: var(--muted); font-size: 9px; }
+.investigation-gap-list p { margin-top: 6px; }
+.investigation-evidence-list__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.investigation-evidence-list__heading code { max-width: 55%; color: #c9b987; font: 9px Consolas, monospace; overflow-wrap: anywhere; text-align: right; }
+.investigation-evidence-list p { margin-top: 6px; }
+.investigation-evidence-list li { scroll-margin-top: 16px; }
+.investigation-evidence-list li:target { border-color: #5a897c; }
+
 @media (max-width: 760px) {
   .source-list { grid-template-columns: 1fr; }
   .service-health-list { grid-template-columns: 1fr; }
@@ -181,4 +205,8 @@ h1 { margin-bottom: 7px; font-size: 27px; font-weight: 600; letter-spacing: -.9p
   .incident-list-section, .freshness-panel, .detail-panel, .service-health-panel { padding: 16px; }
   .incident-meta { gap: 11px 15px; }
   .detail-meta { grid-template-columns: 1fr; gap: 12px; }
+  .investigation-panel { padding: 13px; }
+  .investigation-panel__heading { align-items: flex-start; flex-direction: column; }
+  .investigation-evidence-list__heading { align-items: flex-start; flex-direction: column; }
+  .investigation-evidence-list__heading code { max-width: 100%; text-align: left; }
 }

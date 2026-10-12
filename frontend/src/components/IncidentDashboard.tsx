@@ -11,6 +11,7 @@ import {
   type SourceFreshness,
 } from "../api/incidents";
 import { ServiceHealthPanel } from "./ServiceHealthPanel";
+import { IncidentInvestigation } from "./IncidentInvestigation";
 import { TraceEvidence } from "./TraceEvidence";
 
 type RequestState = "loading" | "ready" | "error";
@@ -381,6 +382,7 @@ function IncidentDetail({
               {traceIds.map((traceId) => <TraceEvidence key={traceId} traceId={traceId} />)}
             </div>
           )}
+          <IncidentInvestigation incidentId={incident.id} />
         </>
       )}
     </section>

@@ -1,5 +1,32 @@
 # TraceForge task log
 
+## Phase 6 evidence-backed investigation — 2026-10-12
+
+### Implementation
+
+- Added strict allowlisted evidence/result schemas and provenance for persisted incident/rule data, detection-store health snapshots, Order-owned recovery observations, and sanitized trace summaries retrieved only by known trace ID through the Gateway. Evidence includes source identity, observation time, freshness, and fixed signal codes; request bodies, headers, payment values/secrets, raw exceptions, and arbitrary Tempo attributes are excluded.
+- Added deterministic `deterministic-v1` investigation output with distinct facts, qualified hypotheses, suggested actions, evidence citations, an explicit uncertainty statement, and typed evidence gaps. Every claim citation is checked against unique evidence IDs before persistence. No external LLM provider is selected or called; `.env.example` provider values remain blank.
+- Added bounded trace collection (at most 3 known trace references, 20 spans each, 1 MiB per Gateway response), a 100-item evidence cap, and a 256 KiB persisted JSON result cap. Required-source missing/stale/unavailable cases become `INSUFFICIENT` or `PARTIAL`; an optional absent trace reference is disclosed without becoming a healthy signal. A terminal Order state contradicting an open recovery incident is disclosed as a gap; investigation never changes incident lifecycle.
+- Added migration `0003_incident_investigations.sql` and a single latest-investigation JSONB row per incident in the Investigation-owned `incident_service` schema. Re-running replaces only that report. Order and trace evidence are collected via fixed, bounded service APIs; no other service schema is read.
+- Added Investigation Service `POST /api/v1/incidents/{id}/investigations` to collect, validate, and persist a latest report, and `GET /api/v1/incidents/{id}/investigations/latest` to retrieve it. A missing incident and a not-yet-investigated incident return distinct 404 codes. The Gateway proxies both fixed routes with bounded response reading and a 10-second upstream read timeout.
+- Added the incident-detail Investigation panel with explicit loading, not-yet-run, running, error, and result states. It displays result completeness, uncertainty, cited facts, hypotheses, actions, gaps, evidence, and per-run source freshness. It never creates sample incidents or treats failed/stale sources as healthy.
+
+### Verification completed in this session
+
+- `.\scripts\test-investigation.ps1` — **65 passed** against the dedicated tmpfs PostgreSQL test database. This includes evidence provenance/citations, missing/stale/partial source behavior, declined-payment compensation semantics, trace response validation/size bounds, API responses, and repository persistence through a fresh repository instance. The script's disposable test container cleanup completed.
+- Pinned Gateway command `docker --context desktop-linux run --rm --network traceforge-network --mount 'type=bind,source=E:/Projects/services/api-gateway,target=/workspace' --mount 'type=volume,source=traceforge-maven-cache,target=/root/.m2' --workdir /workspace maven:3.9.16-eclipse-temurin-21 mvn -B test` — **9 tests passed, 0 failures, 0 errors, 0 skipped**.
+- `npm test` — **3 files / 14 tests passed**. `npm run build` — TypeScript check and Vite production build passed.
+- `docker --context desktop-linux compose config -q` — passed. A read-only Compose snapshot showed all **9 services healthy** before the Investigation restart check. Only `api-gateway` and `investigation-service` were rebuilt/recreated for the live check; no volumes were removed. A post-restart Compose health snapshot could not be obtained during closeout: Docker context/config and named-pipe access returned `Access is denied`. The live API and persisted-report reads returned HTTP 200 after restart.
+- Live Gateway integration used an existing resolved `SERVICE_NOT_READY` incident: investigation POST returned HTTP 200 with `COMPLETE`, 8 collected evidence items, one optional gap, and all citations within the collected set. The latest-result GET returned the same result. Restarting only Investigation Service preserved the same investigation ID and generated timestamp; the saved result remained `COMPLETE` with 8 evidence items.
+- Browser rendering: the local Overview page rendered in the in-app browser at `http://127.0.0.1:5173/#overview`, showing Gateway responding, an honest empty open-incident state, four `UP`/`CURRENT` service snapshots, and five current detection sources. Opened a real resolved `SERVICE_NOT_READY` incident and checked its saved investigation: `COMPLETE` / `deterministic-v1`, cited facts, a qualified hypothesis, recommended action, explicit uncertainty, optional no-trace gap, current source freshness, and collected evidence. No incident or business data was created. Browser console/network logs and mobile layout were not inspected. Automated component tests cover saved, empty, partial, and API-error states.
+- `git diff --check` is recorded after the final documentation edits below. The full `scripts/test-backend.ps1` was not run because this change touched only the Gateway, Investigation Service, and frontend; the focused pinned Gateway suite and isolated Investigation suite were run instead. Remote CI, production authorization, and separate database-role enforcement remain unverified.
+
+### Status and safety
+
+- Phase 6 local implementation, automated verification, live API/restart persistence, and selected-incident browser review are complete. Remote CI, browser console/network inspection, mobile layout, production authorization, and separate database-role enforcement remain unverified. No Phase 7 or Phase 8 implementation was started.
+- The live POST added/updated only an investigation snapshot for an existing resolved service incident. No order, inventory, payment, incident-lifecycle, or legacy test record was modified. The legacy `SKU-TEST-ORDER` inconsistency warning remains unchanged; do not reconcile those records or reset/delete named volumes.
+- Final Git state: branch `feature/phase4-incident-dashboard`, commit `809cd8d`; 17 modified tracked files and 11 untracked Phase 6 files, with an empty staged diff. No files were staged, committed, or pushed.
+
 ## Phase 5 dashboard: service health and trace evidence — 2026-10-12
 
 ### Implementation

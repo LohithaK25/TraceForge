@@ -42,4 +42,19 @@ class IncidentProxyControllerTest {
                         .getStatusCode());
         verifyNoInteractions(client);
     }
+
+    @Test
+    void proxiesInvestigationReadAndRunForFixedIncidentRoutes() {
+        var id = java.util.UUID.fromString("a8d7f65a-2a91-4be2-9231-09bdc4e7440c");
+        byte[] body = "{\"status\":\"INSUFFICIENT\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        when(client.latestInvestigation(id)).thenReturn(
+                new InvestigationClient.ForwardedResponse(HttpStatus.OK, MediaType.APPLICATION_JSON, body));
+        when(client.runInvestigation(id)).thenReturn(
+                new InvestigationClient.ForwardedResponse(HttpStatus.OK, MediaType.APPLICATION_JSON, body));
+
+        assertEquals(HttpStatus.OK, controller.latestInvestigation(id).getStatusCode());
+        assertEquals(HttpStatus.OK, controller.runInvestigation(id).getStatusCode());
+        verify(client).latestInvestigation(id);
+        verify(client).runInvestigation(id);
+    }
 }

@@ -24,7 +24,7 @@ public class InvestigationClient {
     public InvestigationClient(
             @Value("${traceforge.investigation.base-url}") String baseUrl,
             @Value("${traceforge.investigation.connect-timeout:1s}") Duration connectTimeout,
-            @Value("${traceforge.investigation.read-timeout:4s}") Duration readTimeout) {
+            @Value("${traceforge.investigation.read-timeout:10s}") Duration readTimeout) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(connectTimeout);
         requestFactory.setReadTimeout(readTimeout);
@@ -32,7 +32,7 @@ public class InvestigationClient {
     }
 
     public ForwardedResponse list(String status, int limit, String cursor) {
-        return forward(uri -> {
+        return forwardGet(uri -> {
             var builder = uri.path("/api/v1/incidents").queryParam("status", status).queryParam("limit", limit);
             if (cursor != null) builder.queryParam("cursor", cursor);
             return builder.build();
@@ -40,24 +40,44 @@ public class InvestigationClient {
     }
 
     public ForwardedResponse get(UUID id) {
-        return forward(uri -> uri.path("/api/v1/incidents/{id}").build(id));
+        return forwardGet(uri -> uri.path("/api/v1/incidents/{id}").build(id));
+    }
+
+    public ForwardedResponse latestInvestigation(UUID id) {
+        return forwardGet(uri -> uri.path("/api/v1/incidents/{id}/investigations/latest").build(id));
+    }
+
+    public ForwardedResponse runInvestigation(UUID id) {
+        return forwardPost(uri -> uri.path("/api/v1/incidents/{id}/investigations").build(id));
     }
 
     public ForwardedResponse detectionStatus() {
-        return forward(uri -> uri.path("/api/v1/detection-status").build());
+        return forwardGet(uri -> uri.path("/api/v1/detection-status").build());
     }
 
-    private ForwardedResponse forward(java.util.function.Function<UriBuilder, URI> uriFactory) {
+    private ForwardedResponse forwardGet(java.util.function.Function<UriBuilder, URI> uriFactory) {
         try {
-            return restClient.get().uri(uriFactory)
-                    .accept(MediaType.APPLICATION_JSON)
-                    .exchange((request, response) -> new ForwardedResponse(
-                            response.getStatusCode(), response.getHeaders().getContentType(), readLimited(response.getBody())));
+            return forward(restClient.get().uri(uriFactory).accept(MediaType.APPLICATION_JSON));
         } catch (ResponseStatusException exception) {
             throw exception;
         } catch (RestClientException exception) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Investigation service is unavailable");
         }
+    }
+
+    private ForwardedResponse forwardPost(java.util.function.Function<UriBuilder, URI> uriFactory) {
+        try {
+            return forward(restClient.post().uri(uriFactory).accept(MediaType.APPLICATION_JSON));
+        } catch (ResponseStatusException exception) {
+            throw exception;
+        } catch (RestClientException exception) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Investigation service is unavailable");
+        }
+    }
+
+    private ForwardedResponse forward(RestClient.RequestHeadersSpec<?> request) {
+        return request.exchange((outgoingRequest, response) -> new ForwardedResponse(
+                response.getStatusCode(), response.getHeaders().getContentType(), readLimited(response.getBody())));
     }
 
     private static byte[] readLimited(InputStream input) {

@@ -32,6 +32,7 @@ from .models import (
     ScopeType,
     SourceFreshness,
 )
+from .investigation_models import InvestigationResult
 from .rules import HealthRulePolicy, OrderRecoveryPolicy, evaluate_health_observation, evaluate_order_recovery, incident_fingerprint
 
 
@@ -343,6 +344,28 @@ class IncidentRepository:
                 "SELECT * FROM incident_service.incidents WHERE id = %s", (incident_id,)
             ).fetchone()
             return self._record(row) if row else None
+
+    def get_investigation(self, incident_id: uuid.UUID) -> InvestigationResult | None:
+        with psycopg.connect(self._dsn, row_factory=dict_row) as connection:
+            row = connection.execute(
+                "SELECT result FROM incident_service.investigations WHERE incident_id = %s",
+                (incident_id,),
+            ).fetchone()
+            return InvestigationResult.model_validate(row["result"]) if row else None
+
+    def save_investigation(self, result: InvestigationResult) -> None:
+        payload = Jsonb(result.model_dump(mode="json", by_alias=True, exclude_none=True))
+        with psycopg.connect(self._dsn) as connection:
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO incident_service.investigations "
+                    "(incident_id, investigation_id, generated_at, result, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (incident_id) DO UPDATE SET "
+                    "investigation_id = EXCLUDED.investigation_id, generated_at = EXCLUDED.generated_at, "
+                    "result = EXCLUDED.result, updated_at = EXCLUDED.updated_at",
+                    (result.incident_id, result.investigation_id, result.generated_at, payload, result.generated_at),
+                )
 
     def count_open(self, fingerprint: str) -> int:
         with psycopg.connect(self._dsn) as connection:

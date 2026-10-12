@@ -121,6 +121,7 @@ function installApi(
     requests.push(path);
     if (path === "/api/v1/detection-status") return jsonResponse(options.freshness ?? sourceStatus());
     if (path === `/api/v1/incidents/${incidentId}`) return jsonResponse(options.detail ?? incident());
+    if (path.endsWith("/investigations/latest")) return jsonResponse({ detail: { code: "INVESTIGATION_NOT_FOUND" } }, 404);
     if (path === `/api/v1/traces/${"b".repeat(32)}`) return jsonResponse(options.trace ?? {}, options.traceStatus ?? 200);
     if (path.includes("status=RESOLVED")) return jsonResponse(options.resolvedPage ?? page());
     if (options.listStatus && options.listStatus !== 200) return jsonResponse({}, options.listStatus);

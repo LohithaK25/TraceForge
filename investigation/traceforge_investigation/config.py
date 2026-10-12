@@ -20,6 +20,7 @@ class Settings:
     connect_timeout_seconds: float = 0.5
     health_response_limit_bytes: int = 8192
     order_response_limit_bytes: int = 1_048_576
+    trace_response_limit_bytes: int = 1_048_576
     order_page_size: int = 100
     order_max_pages: int = 500
     order_max_cases: int = 50_000
@@ -37,7 +38,7 @@ class Settings:
             raise ValueError("TRACEFORGE_REQUEST_TIMEOUT_SECONDS must be between 0.1 and 10")
         if not 0.1 <= self.connect_timeout_seconds <= self.request_timeout_seconds:
             raise ValueError("TRACEFORGE_CONNECT_TIMEOUT_SECONDS must be positive and no greater than request timeout")
-        if self.health_response_limit_bytes < 128 or self.order_response_limit_bytes < 1024:
+        if self.health_response_limit_bytes < 128 or self.order_response_limit_bytes < 1024 or not 1024 <= self.trace_response_limit_bytes <= 1_048_576:
             raise ValueError("response size bounds are too small")
         if self.order_page_size != 100 or not 1 <= self.order_max_pages <= 1000:
             raise ValueError("Order pagination bounds are invalid")
@@ -83,6 +84,7 @@ class Settings:
             connect_timeout_seconds=_float_env("TRACEFORGE_CONNECT_TIMEOUT_SECONDS", 0.5),
             health_response_limit_bytes=_int_env("TRACEFORGE_HEALTH_RESPONSE_LIMIT_BYTES", 8192),
             order_response_limit_bytes=_int_env("TRACEFORGE_ORDER_RESPONSE_LIMIT_BYTES", 1_048_576),
+            trace_response_limit_bytes=_int_env("TRACEFORGE_TRACE_RESPONSE_LIMIT_BYTES", 1_048_576),
             order_page_size=100,
             order_max_pages=_int_env("TRACEFORGE_ORDER_MAX_PAGES", 500),
             order_max_cases=_int_env("TRACEFORGE_ORDER_MAX_CASES", 50_000),
