@@ -1,5 +1,7 @@
 # Prompt for the next Codex session: Phase 6
 
+> Archived historical prompt. The roadmap has since advanced through Phase 7 and is in Phase 8; do not use the Phase 6 instructions below as the current project task. Read `HANDOFF.md`, `TASKS.md`, and `docs/roadmap.md` for the current state.
+
 Continue TraceForge Phase 6, Evidence-Backed Investigation, in E:/Projects. Implement the roadmap milestone after first inspecting the current repository. Do not start Phase 7 or Phase 8.
 
 ## Refresh and preserve the repository state

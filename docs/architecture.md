@@ -6,7 +6,7 @@ The current sample is a synchronous, persisted saga across separate Spring Boot 
 
 ```mermaid
 flowchart LR
-  Browser[React incident dashboard] -->|health, incidents, service observations, traces| Gateway[API Gateway]
+  Browser[React dashboard] -->|health, orders, incidents, freshness, traces, reports| Gateway[API Gateway]
   Gateway -->|create/read/recover| Order[Order Service]
   Order -->|reserve/release| Inventory[Inventory Service]
   Order -->|authorize| Payment[Payment Service]
@@ -15,8 +15,10 @@ flowchart LR
   Payment --> PaymentDB[(payment_service)]
   Order -. scheduled recovery .-> OrderDB
   Gateway --> Actuator[Actuator readiness]
-  Gateway --> Investigation[Investigation Service]
-  Investigation --> IncidentDB[(incident_service)]
+  Gateway -->|bounded incident, status, and report proxies| Investigation[Investigation Service]
+  Investigation -->|scheduled readiness and recovery reads| Order
+  Investigation -->|incidents, freshness, and latest report| IncidentDB[(incident_service)]
+  Investigation -. optional sanitized trace evidence .-> Gateway
   Gateway -. bounded trace read .-> Tempo[Tempo]
   Gateway -. OTLP HTTP .-> Collector[OpenTelemetry Collector]
   Order -. OTLP HTTP .-> Collector
@@ -168,13 +170,21 @@ Evidence sources are the persisted incident/rule/evidence references, the Invest
 
 `InvestigationResult` separates facts, hypotheses, recommended actions, evidence citations, source freshness, evidence gaps, and explicit uncertainty. The service validates that evidence IDs are unique and every claim cites only collected evidence. Status is `COMPLETE`, `PARTIAL`, or `INSUFFICIENT`; it describes source completeness, not causal certainty. Optional missing trace references are disclosed, but do not invalidate a current required signal. The deterministic `deterministic-v1` adapter is the only configured provider. `.env.example` leaves LLM provider/key/model blank, and no external provider or evaluation harness is part of Phase 6.
 
-The dashboard presents loading, not-yet-run, running, error, and saved-result states within incident details, including citations, gaps, source freshness, and uncertainty. `scripts/test-investigation.ps1` passed 65 isolated tests; the pinned Gateway suite passed 9 tests; frontend tests/build passed 14 tests / production build. Live POST/GET and same-record persistence across Investigation Service restart were verified on 2026-10-12. The in-app browser showed the Overview empty-open/freshness state and a real resolved incident's saved investigation, including cited facts, a qualified hypothesis, recommended action, uncertainty, trace gap, freshness, and collected evidence. Browser console/network logs and mobile layout are unverified. Remote CI, production authorization, and separate database-role enforcement remain outstanding. See [ADR 0008](adr/0008-evidence-backed-investigation.md); Phase 7 evaluation and resilience is next.
+The dashboard presents loading, not-yet-run, running, error, and saved-result states within incident details, including citations, gaps, source freshness, and uncertainty. `scripts/test-investigation.ps1` passed 65 isolated tests; the pinned Gateway suite passed 9 tests; frontend tests/build passed 14 tests / production build. Live POST/GET and same-record persistence across Investigation Service restart were verified on 2026-10-12. The in-app browser showed the Overview empty-open/freshness state and a real resolved incident's saved investigation, including cited facts, a qualified hypothesis, recommended action, uncertainty, trace gap, freshness, and collected evidence. Browser console/network logs and mobile layout are unverified. Remote CI, production authorization, and separate database-role enforcement remain outstanding. See [ADR 0008](adr/0008-evidence-backed-investigation.md).
+
+### Phase 7: investigation evaluation and resilience
+
+The fixed `traceforge-investigation-phase7-v1` suite in `investigation/tests/test_phase7_evaluation.py` invokes the real Investigation API and writes reports to the isolated tmpfs PostgreSQL test schema. Its fixture-backed upstream clients exercise current, stale, missing, partial, and unavailable health/Order/trace states without touching application services or business schemas. Ten fixed cases include a no-incident request and explicit compensated/recovery states. The suite measures persisted API latency, checks each factual claim against cited typed evidence, validates per-case source freshness and uncertainty wording, and verifies citations, qualified hypothesis wording, and that investigation requests preserve incident status and occurrence count.
+
+The result contract has no ranked root-cause field. The evaluator treats the one determinate `PAYMENT_UNAVAILABLE` case as an abstention rather than deriving a ranking from free-form hypothesis text or from facts; measured top-1 and top-3 are therefore 0/1. This is a capability limitation, not evidence that a cause was established. The fresh Phase 8 rerun of the 72-test suite reported 47/47 valid evidence references, 0/26 unsupported factual claims under the fixture oracle, and persisted API latency p50 30.600 ms / p95 34.415 ms over 10 report requests. It also verifies that a terminal confirmed order resolves without creating an incident when there is no open episode. Cost is unavailable because the only configured provider is local deterministic code with no metered external call. These timings use in-process upstream fixtures and are not production latency guarantees.
+
+Order/trace timeout and malformed/oversized response tests, an injected provider-unavailable failure, and an injected PostgreSQL persistence failure all return explicit non-healthy/error outcomes. The provider and persistence failures return safe 503 codes, do not save a report, and leave the incident lifecycle unchanged. Repeated and concurrent requests retain one latest report per incident. Separately, the scoped live container-outage matrix passed on a disposable Compose project on 2026-10-12. Remote CI, production authorization, and separate database roles remain unverified. See [evaluation results](evaluation.md), [ADR 0009](adr/0009-investigation-evaluation-and-resilience.md), and [TASKS.md](../TASKS.md).
 
 ## Other planned boundaries
 
 - **Telemetry:** distributed traces are implemented as described above. Metrics/log exporters, Loki, Prometheus, and Tempo-based detection are out of scope. The incident dashboard does not query telemetry directly.
 - **Detection interface:** the dashboard consumes the real incident and detection-status APIs and separates loading, empty, error, and source-freshness states. Desktop browser verification covered the empty open state, current freshness, resolved history, and a real detail view; mobile and exhaustive browser workflows remain unverified.
-- **Investigation workflows:** Phase 6 implements bounded evidence-backed reports, citation validation, persistence, and explicit uncertainty. Phase 7 owns evaluation and resilience experiments.
+- **Investigation workflows:** Phase 6 implements bounded evidence-backed reports, citation validation, persistence, and explicit uncertainty. Phase 7 adds the fixed evaluation suite and controlled resilience tests; the scoped live application-container outage matrix was locally verified. Remote CI remains unverified.
 - **Dashboard boundary:** use gateway APIs only; no direct database or observability queries. Trace references are displayed only when returned by the incident API.
 
 See [roadmap.md](roadmap.md), [security.md](security.md), [adr/0004-persisted-payment-saga.md](adr/0004-persisted-payment-saga.md), [adr/0005-distributed-tracing.md](adr/0005-distributed-tracing.md), and [adr/0008-evidence-backed-investigation.md](adr/0008-evidence-backed-investigation.md).

@@ -34,3 +34,7 @@ This is a local developer demo, not a production-secure multi-tenant service. Th
 - The project has not yet completed dependency vulnerability scanning or a deployment security review.
 
 Do not describe this local demo as production-secure.
+
+## Phase 7 evaluation and fault injection
+
+The evaluation test uses fixed synthetic objects and the disposable tmpfs PostgreSQL profile; its cleanup does not touch application or business data. Assertions reject uncited or fixture-unsupported factual claims, and failures return fixed error codes without echoing upstream or persistence exception text. An injected investigation-provider failure and database-write failure both return safe 503 responses, write no investigation snapshot, and leave incident lifecycle unchanged. Order/trace client tests use bounded responses and fixed destinations. These are test-fixture experiments; they do not establish behavior during a live production outage. The current test reports no ranked root-cause output and no metered-provider cost; do not infer either from prose hypotheses or evidence fields. See [evaluation results](evaluation.md) and [ADR 0009](adr/0009-investigation-evaluation-and-resilience.md).

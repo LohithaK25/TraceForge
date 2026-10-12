@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from traceforge_investigation.config import Settings
 from traceforge_investigation.investigation_clients import TraceSummaryClient
@@ -39,6 +40,24 @@ def test_trace_client_marks_invalid_or_mismatched_responses_unavailable():
     assert result.summary is None
     assert result.freshness.status == FreshnessStatus.UNAVAILABLE
     assert result.freshness.error_code == "TRACE_RESPONSE_INVALID"
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("handler", "expected_code"),
+    [
+        (lambda _request: httpx.Response(503, content=b"private upstream detail"), "TRACE_SOURCE_UNAVAILABLE"),
+        (lambda _request: (_ for _ in ()).throw(httpx.ReadTimeout("private timeout detail")), "TRACE_UPSTREAM_TIMEOUT"),
+        (lambda _request: httpx.Response(404), "TRACE_NOT_FOUND"),
+    ],
+)
+def test_trace_client_faults_remain_explicit_unavailable_evidence(handler, expected_code):
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = TraceSummaryClient(Settings(), client).fetch(TRACE_ID, NOW)
+
+    assert result.summary is None
+    assert result.freshness.status == FreshnessStatus.UNAVAILABLE
+    assert result.freshness.error_code == expected_code
     client.close()
 
 

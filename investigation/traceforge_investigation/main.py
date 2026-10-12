@@ -17,7 +17,7 @@ from .config import Settings
 from .engine import InvestigationEngine
 from .investigation_clients import TraceSummaryClient
 from .investigation_models import InvestigationResult
-from .investigator import IncidentInvestigator
+from .investigator import IncidentInvestigator, InvestigationProviderUnavailable
 from .models import DetectionStatusResponse, IncidentPage, IncidentRecord
 from .repository import IncidentRepository
 from .scheduler import detection_loop
@@ -151,6 +151,9 @@ def create_app(settings: Settings | None = None, start_scheduler: bool = True) -
         except psycopg.Error:
             logger.warning("investigation_run_database_unavailable")
             raise HTTPException(status_code=503, detail={"code": "DETECTION_STORE_UNAVAILABLE"}) from None
+        except InvestigationProviderUnavailable:
+            logger.warning("investigation_provider_unavailable")
+            raise HTTPException(status_code=503, detail={"code": "INVESTIGATION_PROVIDER_UNAVAILABLE"}) from None
         if result is None:
             raise HTTPException(status_code=404, detail={"code": "INCIDENT_NOT_FOUND"})
         return result

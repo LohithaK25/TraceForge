@@ -1,0 +1,247 @@
+# Rendered by verify-phase7-outages.ps1 into %TEMP%.
+# Keep this topology separate from compose.yaml: it has no shared network,
+# application volume, host data mount, or Grafana dependency. PostgreSQL alone
+# uses a uniquely named disposable volume so its data survives a container restart.
+services:
+  tempo:
+    image: traceforge-phase7-outage-tempo:${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}
+    build:
+      context: __TRACEFORGE_ROOT__/observability/tempo
+    volumes:
+      - type: bind
+        source: __TRACEFORGE_ROOT__/observability/tempo.yaml
+        target: /etc/tempo/tempo.yaml
+        read_only: true
+    tmpfs:
+      - /var/tempo:uid=10001,gid=10001,mode=0750
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3200/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  otel-collector:
+    image: traceforge-phase7-outage-otel-collector:${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}
+    build:
+      context: __TRACEFORGE_ROOT__/observability/otel-collector
+    volumes:
+      - type: bind
+        source: __TRACEFORGE_ROOT__/observability/otel-collector.yaml
+        target: /etc/otelcol-contrib/config.yaml
+        read_only: true
+    depends_on:
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:13133/ >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: traceforge_phase7_test
+      POSTGRES_USER: traceforge_phase7_test
+      POSTGRES_PASSWORD: traceforge-phase7-test-only
+    volumes:
+      - phase7-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  inventory-service:
+    image: traceforge-phase7-outage-inventory:${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}
+    build:
+      context: __TRACEFORGE_ROOT__/services/inventory-service
+    environment:
+      SERVER_PORT: 8081
+      SPRING_PROFILES_ACTIVE: local
+      TRACEFORGE_DATABASE_URL: jdbc:postgresql://postgres:5432/traceforge_phase7_test?currentSchema=inventory_service
+      POSTGRES_USER: traceforge_phase7_test
+      POSTGRES_PASSWORD: traceforge-phase7-test-only
+      TRACEFORGE_INVENTORY_DEMO_SKU: SKU-ALPHA
+      TRACEFORGE_INVENTORY_DEMO_QUANTITY: 12
+      OTEL_SERVICE_NAME: inventory-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=phase7-outage-test
+      OTEL_JAVAAGENT_ENABLED: "true"
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  payment-service:
+    image: traceforge-phase7-outage-payment:${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}
+    build:
+      context: __TRACEFORGE_ROOT__/services/payment-service
+    environment:
+      SERVER_PORT: 8083
+      SPRING_PROFILES_ACTIVE: local
+      TRACEFORGE_DATABASE_URL: jdbc:postgresql://postgres:5432/traceforge_phase7_test?currentSchema=payment_service
+      POSTGRES_USER: traceforge_phase7_test
+      POSTGRES_PASSWORD: traceforge-phase7-test-only
+      OTEL_SERVICE_NAME: payment-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=phase7-outage-test
+      OTEL_JAVAAGENT_ENABLED: "true"
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  order-service:
+    image: traceforge-phase7-outage-order:${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}
+    build:
+      context: __TRACEFORGE_ROOT__/services/order-service
+    environment:
+      SERVER_PORT: 8082
+      SPRING_PROFILES_ACTIVE: local
+      TRACEFORGE_DATABASE_URL: jdbc:postgresql://postgres:5432/traceforge_phase7_test?currentSchema=order_service
+      POSTGRES_USER: traceforge_phase7_test
+      POSTGRES_PASSWORD: traceforge-phase7-test-only
+      INVENTORY_SERVICE_URL: http://inventory-service:8081
+      PAYMENT_SERVICE_URL: http://payment-service:8083
+      # Leave a deterministic window for the detector to observe incomplete
+      # compensation before the real Order recovery worker retries it.
+      TRACEFORGE_RECOVERY_FIXED_DELAY: 300000
+      OTEL_SERVICE_NAME: order-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=phase7-outage-test
+      OTEL_JAVAAGENT_ENABLED: "true"
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    depends_on:
+      postgres:
+        condition: service_healthy
+      inventory-service:
+        condition: service_healthy
+      payment-service:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8082/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  investigation-service:
+    image: traceforge-phase7-outage-investigation:${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}
+    build:
+      context: __TRACEFORGE_ROOT__/investigation
+      target: base
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: traceforge_phase7_test
+      DATABASE_USER: traceforge_phase7_test
+      DATABASE_PASSWORD: traceforge-phase7-test-only
+      GATEWAY_BASE_URL: http://api-gateway:8080
+      ORDER_BASE_URL: http://order-service:8082
+      INVENTORY_BASE_URL: http://inventory-service:8081
+      PAYMENT_BASE_URL: http://payment-service:8083
+      TRACEFORGE_REQUEST_TIMEOUT_SECONDS: 2
+      TRACEFORGE_CONNECT_TIMEOUT_SECONDS: 0.5
+      TRACEFORGE_SOURCE_STALE_SECONDS: 30
+      TRACEFORGE_RECOVERY_GRACE_SECONDS: 30
+      TRACEFORGE_DETECTION_INTERVAL_SECONDS: 5
+      TRACEFORGE_ORDER_TERMINAL_LOOKUP_LIMIT: 500
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - target: 8090
+        published: "18090"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/readyz', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  api-gateway:
+    image: traceforge-phase7-outage-gateway:${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}
+    build:
+      context: __TRACEFORGE_ROOT__/services/api-gateway
+    environment:
+      SERVER_PORT: 8080
+      INVENTORY_SERVICE_URL: http://inventory-service:8081
+      ORDER_SERVICE_URL: http://order-service:8082
+      INVESTIGATION_SERVICE_URL: http://investigation-service:8090
+      TEMPO_BASE_URL: http://tempo:3200
+      OTEL_SERVICE_NAME: api-gateway
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=traceforge,deployment.environment.name=phase7-outage-test
+      OTEL_JAVAAGENT_ENABLED: "true"
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      OTEL_TRACES_SAMPLER: parentbased_always_on
+      OTEL_PROPAGATORS: tracecontext
+      OTEL_METRICS_EXPORTER: none
+      OTEL_LOGS_EXPORTER: none
+    depends_on:
+      inventory-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+      investigation-service:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    ports:
+      - target: 8080
+        published: "18080"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health | grep -q 'UP'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+networks:
+  default: {}
+
+volumes:
+  phase7-postgres-data:
+    name: traceforge-phase7-outage-postgres-${TRACEFORGE_OUTAGE_IMAGE_TAG:-local}

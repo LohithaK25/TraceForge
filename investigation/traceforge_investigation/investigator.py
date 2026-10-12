@@ -32,6 +32,10 @@ MAX_TRACE_REFERENCES = 3
 MAX_SPANS_PER_TRACE = 20
 
 
+class InvestigationProviderUnavailable(Exception):
+    """Raised by a provider adapter when it cannot produce a report safely."""
+
+
 class InvestigationProvider(Protocol):
     name: str
 
@@ -115,8 +119,8 @@ class DeterministicInvestigationProvider:
         hypotheses: list[InvestigationClaim] = []
         actions: list[InvestigationClaim] = []
         if incident.rule_key == RuleKey.SERVICE_NOT_READY and health is not None:
-            status = health.details.probe_status
-            if health.freshness_status == FreshnessStatus.CURRENT and status in {"DOWN", "TIMEOUT"}:
+            probe_status = health.details.probe_status
+            if health.freshness_status == FreshnessStatus.CURRENT and probe_status in {"DOWN", "TIMEOUT"}:
                 hypotheses.append(InvestigationClaim(
                     claimId="hypothesis-health",
                     text="The current non-UP probe is consistent with the readiness incident; the available evidence does not establish its underlying cause.",
@@ -127,7 +131,7 @@ class DeterministicInvestigationProvider:
                     text="Inspect the affected service's readiness and obtain fresh probes; this rule requires two consecutive UP observations to resolve.",
                     evidenceIds=[health.evidence_id],
                 ))
-            elif health.freshness_status == FreshnessStatus.CURRENT and status == "UP":
+            elif health.freshness_status == FreshnessStatus.CURRENT and probe_status == "UP":
                 hypotheses.append(InvestigationClaim(
                     claimId="hypothesis-recovery",
                     text="The latest UP probe may reflect recovery after the incident signal; one observation alone does not satisfy the two-probe resolution rule.",
@@ -163,9 +167,14 @@ class DeterministicInvestigationProvider:
                     evidenceIds=[order.evidence_id],
                 ))
             else:
+                reconciliation_text = (
+                    "The Order observation is terminal and the incident record is RESOLVED; this report does not mutate workflow or incident state."
+                    if incident.status == "RESOLVED"
+                    else "The current Order observation is terminal; allow the next deterministic detection cycle to reconcile the open incident, and do not change incident state from this report."
+                )
                 actions.append(InvestigationClaim(
                     claimId="action-order-reconcile",
-                    text="The current Order observation is terminal; allow the next deterministic detection cycle to reconcile the open incident, and do not change incident state from this report.",
+                    text=reconciliation_text,
                     evidenceIds=["incident", order.evidence_id],
                 ))
 
