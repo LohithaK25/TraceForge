@@ -1,4 +1,5 @@
 import asyncio
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -6,7 +7,18 @@ import psycopg
 from uuid import UUID
 
 from traceforge_investigation.main import create_app
-from traceforge_investigation.models import EvidenceReference, RuleFinding, RuleKey, ScopeType, Severity
+from traceforge_investigation.models import (
+    EvidenceReference,
+    FreshnessStatus,
+    HealthObservation,
+    ProbeStatus,
+    RuleFinding,
+    RuleKey,
+    ScopeType,
+    Severity,
+    SourceFreshness,
+)
+from traceforge_investigation.rules import HealthRulePolicy
 from .helpers import NOW
 
 
@@ -33,8 +45,14 @@ def test_liveness_readiness_and_empty_incident_api_are_explicit(incident_reposit
     assert incident_api.status_code == 200
     assert incident_api.json()["items"] == []
     assert incident_api.json()["detectionStatus"]["status"] == "NOT_RUN"
+    assert incident_api.json()["detectionStatus"]["services"] == [
+        {"serviceName": name, "status": "UNKNOWN", "observedAt": None,
+         "freshnessStatus": "UNAVAILABLE", "incidentOpen": False}
+        for name in ("api-gateway", "order-service", "inventory-service", "payment-service")
+    ]
     assert detection_status.status_code == 200
     assert detection_status.json()["status"] == "NOT_RUN"
+    assert detection_status.json()["services"][0]["status"] == "UNKNOWN"
     assert openapi.status_code == 404
 
 
@@ -99,6 +117,72 @@ def test_database_failures_return_safe_503_instead_of_empty_lists(incident_repos
     response = asyncio.run(check())
     assert response.status_code == 503
     assert response.json() == {"detail": {"code": "DETECTION_STORE_UNAVAILABLE"}}
+
+
+def test_detection_status_separates_last_probe_from_collection_freshness(incident_repository, monkeypatch):
+    service = "payment-service"
+    for second in (0, 1):
+        incident_repository.apply_health_observation(
+            HealthObservation(
+                serviceName=service,
+                status=ProbeStatus.DOWN,
+                observedAt=NOW.replace(second=second),
+                httpStatus=503,
+                signalCode="HTTP_NON_200",
+            ),
+            NOW.replace(second=second),
+            HealthRulePolicy(),
+        )
+
+    cycle_id = UUID("23761874-53d4-4b7d-a8c5-45d4a99c6010")
+    cycle_start = NOW.replace(second=2)
+    incident_repository.begin_cycle(cycle_id, cycle_start)
+    freshness = SourceFreshness(
+        source=service,
+        status=FreshnessStatus.CURRENT,
+        attemptedAt=cycle_start,
+        lastSuccessAt=cycle_start,
+        itemCount=1,
+        errorCode="HTTP_NON_200",
+    )
+    incident_repository.finish_cycle(cycle_id, cycle_start, "COMPLETE", 1, 0, [freshness])
+
+    current = incident_repository.detection_status(cycle_start, stale_after_seconds=30)
+    payment = next(snapshot for snapshot in current.services if snapshot.service_name == service)
+    assert payment.status == ProbeStatus.DOWN
+    assert payment.observed_at == NOW.replace(second=1)
+    assert payment.freshness_status == FreshnessStatus.CURRENT
+    assert payment.incident_open is True
+
+    monkeypatch.setattr(
+        "traceforge_investigation.main.IncidentRepository",
+        lambda settings: incident_repository,
+    )
+    app = create_app(incident_repository._settings, start_scheduler=False)
+    original_detection_status = incident_repository.detection_status
+    monkeypatch.setattr(
+        incident_repository,
+        "detection_status",
+        lambda now, stale_after_seconds: original_detection_status(cycle_start, stale_after_seconds),
+    )
+
+    async def read_detection_status():
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                return await client.get("/api/v1/detection-status")
+
+    response = asyncio.run(read_detection_status())
+    assert response.status_code == 200
+    payment_api = next(item for item in response.json()["services"] if item["serviceName"] == service)
+    assert payment_api["status"] == "DOWN"
+    assert payment_api["freshnessStatus"] == "CURRENT"
+    assert payment_api["incidentOpen"] is True
+
+    stale = original_detection_status(cycle_start + timedelta(seconds=60), 30)
+    payment_stale = next(snapshot for snapshot in stale.services if snapshot.service_name == service)
+    assert payment_stale.status == ProbeStatus.DOWN
+    assert payment_stale.freshness_status == FreshnessStatus.STALE
 
 
 def _raise_database_error():

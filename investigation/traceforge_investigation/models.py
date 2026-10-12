@@ -301,10 +301,26 @@ class DetectionCycleRecord(StrictModel):
         return value.astimezone(timezone.utc) if value is not None else None
 
 
+class ServiceHealthSnapshot(StrictModel):
+    service_name: Literal["api-gateway", "order-service", "inventory-service", "payment-service"] = Field(alias="serviceName")
+    status: ProbeStatus
+    observed_at: datetime | None = Field(default=None, alias="observedAt")
+    freshness_status: FreshnessStatus = Field(alias="freshnessStatus")
+    incident_open: bool = Field(alias="incidentOpen")
+
+    @field_validator("observed_at")
+    @classmethod
+    def require_utc_observation(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("timestamps must include a timezone")
+        return value.astimezone(timezone.utc) if value is not None else None
+
+
 class DetectionStatusResponse(StrictModel):
     status: Literal["NOT_RUN", "CURRENT", "PARTIAL", "STALE", "UNAVAILABLE"]
     latest_cycle: DetectionCycleRecord | None = Field(default=None, alias="latestCycle")
     sources: list[SourceFreshness]
+    services: list[ServiceHealthSnapshot]
 
 
 class IncidentPage(StrictModel):

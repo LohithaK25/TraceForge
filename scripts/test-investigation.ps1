@@ -8,7 +8,7 @@ try {
     $project = 'traceforge-investigation-tests'
     $arguments = @(
         'compose', '--project-name', $project, '--profile', 'test',
-        'run', '--build', '--rm', 'investigation-test'
+        'run', '--build', '--rm', 'investigation-test', 'pytest', '-q', '-s'
     )
     & docker @arguments
     $testExitCode = $LASTEXITCODE

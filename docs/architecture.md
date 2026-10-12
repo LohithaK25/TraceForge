@@ -6,7 +6,7 @@ The current sample is a synchronous, persisted saga across separate Spring Boot 
 
 ```mermaid
 flowchart LR
-  Browser[React health dashboard] -->|health only| Gateway[API Gateway]
+  Browser[React dashboard] -->|health, orders, incidents, freshness, traces, reports| Gateway[API Gateway]
   Gateway -->|create/read/recover| Order[Order Service]
   Order -->|reserve/release| Inventory[Inventory Service]
   Order -->|authorize| Payment[Payment Service]
@@ -15,6 +15,11 @@ flowchart LR
   Payment --> PaymentDB[(payment_service)]
   Order -. scheduled recovery .-> OrderDB
   Gateway --> Actuator[Actuator readiness]
+  Gateway -->|bounded incident, status, and report proxies| Investigation[Investigation Service]
+  Investigation -->|scheduled readiness and recovery reads| Order
+  Investigation -->|incidents, freshness, and latest report| IncidentDB[(incident_service)]
+  Investigation -. optional sanitized trace evidence .-> Gateway
+  Gateway -. bounded trace read .-> Tempo[Tempo]
   Gateway -. OTLP HTTP .-> Collector[OpenTelemetry Collector]
   Order -. OTLP HTTP .-> Collector
   Inventory -. OTLP HTTP .-> Collector
@@ -23,7 +28,7 @@ flowchart LR
   Grafana[Grafana Explore] --> Tempo
 ```
 
-The gateway, Tempo query API, and Grafana UI are published only on loopback. Internal service ports, Collector receivers, Collector health, and PostgreSQL are available only on the Compose network. The dashboard reports only gateway health and does not create sample business activity.
+The gateway, Tempo query API, and Grafana UI are published only on loopback. Internal service ports, Collector receivers, Collector health, and PostgreSQL are available only on the Compose network. The dashboard reads gateway health and incident APIs; it does not create sample business activity.
 
 ## Order state machine
 
@@ -135,11 +140,19 @@ At startup, the service launches one scheduled loop, configurable with `TRACEFOR
 
 Open incidents are deduplicated by a stable SHA-256 fingerprint (rule, scope, source), retain at most 20 structured evidence references, increment occurrence count on repeated observations, and can recur as a new episode after resolution. Order's `GET /internal/v1/orders/attention` exposes only active recovery cases. A second bounded private endpoint, `GET /internal/v1/orders/recovery-observations?orderIds=...`, accepts 1–100 unique known order IDs and returns explicit found cases plus `missingOrderIds`. The detector queries this endpoint only for IDs of open recovery incidents that no longer appear in the active feed. It resolves only from an explicit terminal `CONFIRMED` or `FAILED` observation with required compensation complete; missing IDs and unavailable/stale Order reads never resolve.
 
-The Investigation Service exposes `/healthz` and database-backed `/readyz` internally, plus `/api/v1/incidents`, `/api/v1/incidents/{id}`, and `/api/v1/detection-status` on its private network address. The gateway proxies these as `GET /api/v1/incidents` (status `OPEN|RESOLVED`, limit 1–100, opaque cursor), `GET /api/v1/incidents/{id}`, and `GET /api/v1/detection-status`. Gateway-to-Investigation calls use fixed paths, timeouts, bounded response reading, and safe upstream errors. The detection status reports the latest persisted cycle and per-source `CURRENT`, `PARTIAL`, `STALE`, or `UNAVAILABLE` status. The API is read-only; the dashboard does not yet display incidents.
+The Investigation Service exposes `/healthz` and database-backed `/readyz` internally, plus `/api/v1/incidents`, `/api/v1/incidents/{id}`, and `/api/v1/detection-status` on its private network address. The gateway proxies these as `GET /api/v1/incidents` (status `OPEN|RESOLVED`, limit 1–100, opaque cursor), `GET /api/v1/incidents/{id}`, and `GET /api/v1/detection-status`. Gateway-to-Investigation calls use fixed paths, timeouts, bounded response reading, and safe upstream errors. The detection status reports the latest persisted cycle and per-source `CURRENT`, `PARTIAL`, `STALE`, or `UNAVAILABLE` status. The dashboard reads these APIs for open incidents, resolved history, selected evidence details, and source freshness. Empty findings and source freshness remain distinct; failed, stale, partial, or not-run sources are not presented as confirmed health. The frontend does not query PostgreSQL, Investigation Service directly, or Tempo.
 
 Tempo is not queried by the detector; trace IDs are optional evidence references and are not a detection prerequisite. On 2026-10-10, the isolated Investigation suite passed 53 tests, all four Java services passed 37 tests with the pinned JDK 21/Maven toolchain, and live detection tests verified incident opening/deduplication/resolution, failed-source non-resolution, persisted incident/freshness after Investigation restart, bounded APIs, and continued cycles with Collector stopped. Exact output, trace IDs, and remaining environmental caveats are in [TASKS.md](../TASKS.md).
 
 The reproducible isolated suite is `scripts/test-investigation.ps1`: it runs against a dedicated `incident-test-postgres` container with a tmpfs database and a separate Compose project. The script's fixture checks database identity before applying migrations or deleting test rows. See [TASKS.md](../TASKS.md) for the recorded results and [security.md](security.md) for exposure limitations.
+
+### Phase 5: service health and trace evidence views
+
+The existing `GET /api/v1/detection-status` response now includes a bounded `services` array for `api-gateway`, `order-service`, `inventory-service`, and `payment-service`. Each entry reports the last persisted readiness probe (`UP`, `DOWN`, `TIMEOUT`, or `UNKNOWN`), its observation time, the corresponding collection freshness (`CURRENT`, `PARTIAL`, `STALE`, or `UNAVAILABLE`), and whether a `SERVICE_NOT_READY` incident is open. An absent observation is represented as `UNKNOWN`, no timestamp, and `UNAVAILABLE` freshness. The UI keeps probe result, freshness, and incident state distinct; stale observations are not shown as current health.
+
+The dashboard can request `GET /api/v1/traces/{traceId}` through the Gateway when a user opens a trace reference on incident detail. The Gateway validates a lowercase 32-character trace ID and queries only Tempo's fixed `/api/v2/traces/{traceId}` route. It returns a sanitized summary of at most 250 spans from a response capped at 1 MiB with bounded connection/read timeouts. The response includes service, span and parent IDs, operation name, timestamps, span status, and allowlisted HTTP method/route/status fields; raw Tempo attributes, events, bodies, exception messages, and payment data are not forwarded. Tempo not found is distinct from Tempo unavailability, and neither is evidence that an incident resolved. The frontend does not contact Tempo directly.
+
+These endpoints are read-only local-demo APIs. On 2026-10-12 the Investigation suite passed 54 tests and the pinned Gateway suite passed 8 tests. The rebuilt Gateway returned a real four-span trace across Gateway and Inventory, rejected malformed IDs (400), returned 404 for a missing trace, and returned 503 while Tempo was stopped; Tempo was restored healthy afterward. Detection continued while the optional Collector was stopped. Four supplied desktop screenshots document the visible probe/freshness panels, honest empty-open state, real resolved history and incident detail, and trace-evidence section with no returned trace references. This confirms only those screenshot-visible desktop states; mobile and exhaustive browser interaction/network behavior remain unverified. Remote CI, production authorization, and separate database-role enforcement are also unverified. See [ADR 0007](adr/0007-service-health-and-trace-views.md) and [TASKS.md](../TASKS.md).
 
 ## Local fault controls
 
@@ -149,11 +162,29 @@ Compose activates the `local` profile on Order, Inventory, and Payment services.
 
 The Compose named volume `traceforge-postgres-data` preserves the Order, Inventory, Payment, and incident schemas across container and application restarts. The named `traceforge-tempo-data` volume preserves trace WAL and blocks across container restarts; `docker compose down -v` removes both. Each Java application Dockerfile builds with `maven:3.9.16-eclipse-temurin-21`, downloads the pinned Java agent artifact at image build, and runs on `eclipse-temurin:21-jre-alpine`. `scripts/test-backend.ps1` starts the stack, executes Java backend suites in one-shot containers on the same network/toolchain, runs saga restart checks, and invokes the Tempo trace assertions. `scripts/test-investigation.ps1` uses a separate tmpfs-backed Postgres test service.
 
+### Phase 6: evidence-backed investigation
+
+Investigation is an explicit, bounded operation on an existing incident; it does not alter deterministic incident lifecycle. `POST /api/v1/incidents/{id}/investigations` collects evidence, validates the output schema and citations, then upserts one latest snapshot for that incident in `incident_service.investigations`. `GET /api/v1/incidents/{id}/investigations/latest` returns that snapshot; `INVESTIGATION_NOT_FOUND` distinguishes an existing incident with no saved run from an unknown incident. The Gateway proxies both fixed routes and bounds response reading at 1 MiB with a 10-second read timeout. The Investigation Service remains private to the Compose network.
+
+Evidence sources are the persisted incident/rule/evidence references, the Investigation-owned persisted health snapshot/source freshness, a bounded Order-owned recovery observation for recovery incidents, and optional sanitized trace summaries fetched by known trace ID through the Gateway. The trace client requests at most 3 references, validates each response, and includes at most 20 spans per trace; the HTTP response limit is 1 MiB. The result schema caps evidence at 100 items and the persisted JSONB object at 256 KiB. Upstream errors become explicit gaps/freshness rather than fabricated success. An open incident contradicted by terminal Order evidence is reported as a gap; this API never resolves the incident.
+
+`InvestigationResult` separates facts, hypotheses, recommended actions, evidence citations, source freshness, evidence gaps, and explicit uncertainty. The service validates that evidence IDs are unique and every claim cites only collected evidence. Status is `COMPLETE`, `PARTIAL`, or `INSUFFICIENT`; it describes source completeness, not causal certainty. Optional missing trace references are disclosed, but do not invalidate a current required signal. The deterministic `deterministic-v1` adapter is the only configured provider. `.env.example` leaves LLM provider/key/model blank, and no external provider or evaluation harness is part of Phase 6.
+
+The dashboard presents loading, not-yet-run, running, error, and saved-result states within incident details, including citations, gaps, source freshness, and uncertainty. `scripts/test-investigation.ps1` passed 65 isolated tests; the pinned Gateway suite passed 9 tests; frontend tests/build passed 14 tests / production build. Live POST/GET and same-record persistence across Investigation Service restart were verified on 2026-10-12. The in-app browser showed the Overview empty-open/freshness state and a real resolved incident's saved investigation, including cited facts, a qualified hypothesis, recommended action, uncertainty, trace gap, freshness, and collected evidence. Browser console/network logs and mobile layout are unverified. Remote CI, production authorization, and separate database-role enforcement remain outstanding. See [ADR 0008](adr/0008-evidence-backed-investigation.md).
+
+### Phase 7: investigation evaluation and resilience
+
+The fixed `traceforge-investigation-phase7-v1` suite in `investigation/tests/test_phase7_evaluation.py` invokes the real Investigation API and writes reports to the isolated tmpfs PostgreSQL test schema. Its fixture-backed upstream clients exercise current, stale, missing, partial, and unavailable health/Order/trace states without touching application services or business schemas. Ten fixed cases include a no-incident request and explicit compensated/recovery states. The suite measures persisted API latency, checks each factual claim against cited typed evidence, validates per-case source freshness and uncertainty wording, and verifies citations, qualified hypothesis wording, and that investigation requests preserve incident status and occurrence count.
+
+The result contract has no ranked root-cause field. The evaluator treats the one determinate `PAYMENT_UNAVAILABLE` case as an abstention rather than deriving a ranking from free-form hypothesis text or from facts; measured top-1 and top-3 are therefore 0/1. This is a capability limitation, not evidence that a cause was established. The fresh Phase 8 rerun of the 72-test suite reported 47/47 valid evidence references, 0/26 unsupported factual claims under the fixture oracle, and persisted API latency p50 30.600 ms / p95 34.415 ms over 10 report requests. It also verifies that a terminal confirmed order resolves without creating an incident when there is no open episode. Cost is unavailable because the only configured provider is local deterministic code with no metered external call. These timings use in-process upstream fixtures and are not production latency guarantees.
+
+Order/trace timeout and malformed/oversized response tests, an injected provider-unavailable failure, and an injected PostgreSQL persistence failure all return explicit non-healthy/error outcomes. The provider and persistence failures return safe 503 codes, do not save a report, and leave the incident lifecycle unchanged. Repeated and concurrent requests retain one latest report per incident. Separately, the scoped live container-outage matrix passed on a disposable Compose project on 2026-10-12. Remote CI, production authorization, and separate database roles remain unverified. See [evaluation results](evaluation.md), [ADR 0009](adr/0009-investigation-evaluation-and-resilience.md), and [TASKS.md](../TASKS.md).
+
 ## Other planned boundaries
 
-- **Telemetry:** distributed traces are implemented as described above. Metrics/log exporters, Loki, Prometheus, Tempo-based detection, and an observability-driven dashboard are out of scope.
-- **Detection interface:** the next step is a dashboard for real incident and detection-status APIs, with explicit loading, empty, unavailable, and partial-data states. Browser workflow coverage remains future work.
-- **Investigation workflows:** extend the existing FastAPI service with activation, incident reads, normalized evidence, deterministic investigations, constrained provider adapters, validated citations, and evaluation.
-- **Dashboard:** consume real incident/order APIs with explicit unavailable and partial-data states; no direct database or observability queries.
+- **Telemetry:** distributed traces are implemented as described above. Metrics/log exporters, Loki, Prometheus, and Tempo-based detection are out of scope. The incident dashboard does not query telemetry directly.
+- **Detection interface:** the dashboard consumes the real incident and detection-status APIs and separates loading, empty, error, and source-freshness states. Desktop browser verification covered the empty open state, current freshness, resolved history, and a real detail view; mobile and exhaustive browser workflows remain unverified.
+- **Investigation workflows:** Phase 6 implements bounded evidence-backed reports, citation validation, persistence, and explicit uncertainty. Phase 7 adds the fixed evaluation suite and controlled resilience tests; the scoped live application-container outage matrix was locally verified. Remote CI remains unverified.
+- **Dashboard boundary:** use gateway APIs only; no direct database or observability queries. Trace references are displayed only when returned by the incident API.
 
-See [roadmap.md](roadmap.md), [security.md](security.md), [adr/0004-persisted-payment-saga.md](adr/0004-persisted-payment-saga.md), and [adr/0005-distributed-tracing.md](adr/0005-distributed-tracing.md).
+See [roadmap.md](roadmap.md), [security.md](security.md), [adr/0004-persisted-payment-saga.md](adr/0004-persisted-payment-saga.md), [adr/0005-distributed-tracing.md](adr/0005-distributed-tracing.md), and [adr/0008-evidence-backed-investigation.md](adr/0008-evidence-backed-investigation.md).

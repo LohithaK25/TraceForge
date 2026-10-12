@@ -19,6 +19,8 @@ from .models import (
     HealthEvaluation,
     HealthObservation,
     HealthRuleState,
+    ProbeStatus,
+    ServiceHealthSnapshot,
     IncidentRecord,
     DetectionCycleRecord,
     DetectionStatusResponse,
@@ -30,11 +32,13 @@ from .models import (
     ScopeType,
     SourceFreshness,
 )
+from .investigation_models import InvestigationResult
 from .rules import HealthRulePolicy, OrderRecoveryPolicy, evaluate_health_observation, evaluate_order_recovery, incident_fingerprint
 
 
 _MIGRATION_NAME = re.compile(r"^(\d{4})_[a-z0-9_]+\.sql$")
 _SCHEMA_LOCK_ID = 7_341_027_184
+_HEALTH_SERVICES = ("api-gateway", "order-service", "inventory-service", "payment-service")
 
 
 class IncidentRepository:
@@ -203,6 +207,10 @@ class IncidentRepository:
                 "SELECT source, status, attempted_at, last_success_at, item_count, error_code "
                 "FROM incident_service.detection_source_state ORDER BY source"
             ).fetchall()
+            health_rows = connection.execute(
+                "SELECT service_name, last_status, last_observed_at, incident_open "
+                "FROM incident_service.health_rule_state ORDER BY service_name"
+            ).fetchall()
         sources = []
         for row in source_rows:
             source = SourceFreshness.model_validate(row)
@@ -229,7 +237,23 @@ class IncidentRepository:
                 status = "STALE" if any(source.status == FreshnessStatus.STALE for source in sources) else "PARTIAL"
             else:
                 status = "CURRENT"
-        return DetectionStatusResponse(status=status, latestCycle=latest, sources=sources)
+        source_status = {source.source: source.status for source in sources}
+        health_by_service = {row["service_name"]: row for row in health_rows}
+        services = [
+            ServiceHealthSnapshot(
+                serviceName=service_name,
+                status=(
+                    ProbeStatus(health_by_service[service_name]["last_status"])
+                    if service_name in health_by_service and health_by_service[service_name]["last_status"]
+                    else ProbeStatus.UNKNOWN
+                ),
+                observedAt=(health_by_service[service_name]["last_observed_at"] if service_name in health_by_service else None),
+                freshnessStatus=source_status.get(service_name, FreshnessStatus.UNAVAILABLE),
+                incidentOpen=(health_by_service[service_name]["incident_open"] if service_name in health_by_service else False),
+            )
+            for service_name in _HEALTH_SERVICES
+        ]
+        return DetectionStatusResponse(status=status, latestCycle=latest, sources=sources, services=services)
 
     def apply_health_observation(
         self,
@@ -320,6 +344,28 @@ class IncidentRepository:
                 "SELECT * FROM incident_service.incidents WHERE id = %s", (incident_id,)
             ).fetchone()
             return self._record(row) if row else None
+
+    def get_investigation(self, incident_id: uuid.UUID) -> InvestigationResult | None:
+        with psycopg.connect(self._dsn, row_factory=dict_row) as connection:
+            row = connection.execute(
+                "SELECT result FROM incident_service.investigations WHERE incident_id = %s",
+                (incident_id,),
+            ).fetchone()
+            return InvestigationResult.model_validate(row["result"]) if row else None
+
+    def save_investigation(self, result: InvestigationResult) -> None:
+        payload = Jsonb(result.model_dump(mode="json", by_alias=True, exclude_none=True))
+        with psycopg.connect(self._dsn) as connection:
+            with connection.transaction():
+                connection.execute(
+                    "INSERT INTO incident_service.investigations "
+                    "(incident_id, investigation_id, generated_at, result, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s) "
+                    "ON CONFLICT (incident_id) DO UPDATE SET "
+                    "investigation_id = EXCLUDED.investigation_id, generated_at = EXCLUDED.generated_at, "
+                    "result = EXCLUDED.result, updated_at = EXCLUDED.updated_at",
+                    (result.incident_id, result.investigation_id, result.generated_at, payload, result.generated_at),
+                )
 
     def count_open(self, fingerprint: str) -> int:
         with psycopg.connect(self._dsn) as connection:

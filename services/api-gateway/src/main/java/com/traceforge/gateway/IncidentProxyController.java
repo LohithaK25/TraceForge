@@ -6,6 +6,7 @@ import java.util.regex.Pattern;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -43,6 +44,16 @@ public class IncidentProxyController {
     @GetMapping("/incidents/{id}")
     public ResponseEntity<byte[]> get(@PathVariable UUID id) {
         return toResponse(investigationClient.get(id));
+    }
+
+    @GetMapping("/incidents/{id}/investigations/latest")
+    public ResponseEntity<byte[]> latestInvestigation(@PathVariable UUID id) {
+        return toResponse(investigationClient.latestInvestigation(id));
+    }
+
+    @PostMapping("/incidents/{id}/investigations")
+    public ResponseEntity<byte[]> runInvestigation(@PathVariable UUID id) {
+        return toResponse(investigationClient.runInvestigation(id));
     }
 
     @GetMapping("/detection-status")
